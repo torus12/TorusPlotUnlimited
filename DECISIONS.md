@@ -310,3 +310,43 @@ Every decision made autonomously during the build is logged here:
 - **Alternatives:** tools written directly against the SDK (harder to unit-test).
 - **Reason:** testable without a running server; protocol tested in-memory and over stdio.
 - **Not exercised:** not run against a real Claude Desktop / Claude Code client from the sandbox.
+
+## D-029 lifelines and scikit-posthocs are test-only cross-check libraries
+- **Decision:** `lifelines` and `scikit-posthocs` moved from `requirements.txt` to
+  `requirements-dev.txt`. TorusPlot's own code computes Kaplan-Meier, log-rank, Dunn and the
+  other procedures; these libraries are used by the test-suite to cross-check the results.
+- **Alternatives:** call the libraries at runtime as the brief's default suggests.
+- **Reason:** (1) each own implementation exists for a concrete reason (determinism, options
+  the library lacks, bugs worked around; see D-016 and D-020) and is validated against the
+  library to tight tolerances; (2) the independent licensing audit pointed out that unused
+  runtime dependencies only add licence surface (five fewer packages in the default install).
+  Switching back would be a small change inside `survival.py` / `posthoc.py`.
+
+## D-030 Two textbook teaching datasets replaced by constructed data
+- **Decision:** The repeated-measures example from a statistics textbook and the tooth-growth
+  dataset (best known from the datasets bundled with a GPL statistics package) are no longer
+  typed into the tests. They are replaced by constructed data with analytically known
+  answers (sphericity quantities from a prescribed covariance matrix; factorial sums of
+  squares from a prescribed cell-mean structure). The remaining published examples stay
+  (numbers typed in, cited to primary sources, test-only, excluded from the release ZIP).
+- **Record:** before removal, TorusPlot reproduced the textbook's published values exactly
+  (F(3,21) = 3.79, Mauchly W = .136, chi2(5) = 11.41, P = .047, GG epsilon = .533,
+  HF epsilon = .666) and the tooth-growth ANOVA table (F = 15.572, 92.000, 4.107 on 54 df);
+  the independent statistics reviewer confirmed the same.
+- **Alternatives:** keep them (measured values are facts) or seek counsel first.
+- **Reason:** the licensing audit ranked these two as the most sensitive; replacing them
+  costs no validation strength.
+
+## D-031 The MCP SDK is an optional extra (keeps an LGPL module out of the default install)
+- **Decision:** `mcp` moved from `requirements.txt` to `requirements-mcp.txt`. The MCP server
+  works after one documented install step (`docs/MCP.md`); without it,
+  `python -m torusplot.mcp_server` prints how to install it.
+- **What was found:** on Windows the MCP SDK depends on `pywin32` (PSF license), whose wheel
+  also contains `adodbapi`, a separate module under LGPL-2.1. TorusPlot never imports it, but
+  the brief disallows LGPL anywhere in runtime dependencies. The stronger license gate
+  (which now scans license texts inside wheels on each CI platform) caught this on the
+  Windows runner.
+- **Alternatives:** keep `mcp` in the default install with a recorded exception.
+- **Reason:** the default install now has no LGPL component beyond the GCC runtime libraries
+  inside NumPy/SciPy (D-007), which have no alternative. Users who want the MCP server opt
+  in knowingly; the finding is recorded in `tools/license_overrides.yaml`.

@@ -31,7 +31,8 @@ ROOT = Path(__file__).resolve().parent.parent
 #: Top-level files and folders that make up the product.
 INCLUDE = [
     "LICENSE", "THIRD_PARTY_NOTICES.md", "README.md", ".env.example", "pyproject.toml",
-    "requirements.txt", "requirements-lock.txt", "requirements-ai.txt",
+    "requirements.txt", "requirements-lock.txt", "requirements-ai.txt", "requirements-mcp.txt",
+    "requirements-optional-lock.txt",
     "run_torusplot.bat", "run_torusplot.sh", "cli.py",
     ".streamlit/config.toml", "app/", "torusplot/", "examples/",
     "docs/USER_GUIDE.md", "docs/STATS_METHODS.md", "docs/MCP.md", "docs/PROMPT_TEMPLATE_FOR_OUTSIDE_AI.md",

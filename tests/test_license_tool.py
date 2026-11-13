@@ -78,14 +78,19 @@ def test_overrides_have_source_urls():
 
 
 def test_lock_file_is_fully_covered_and_in_sync():
-    pins = check_licenses.read_lock_names()
-    assert len(pins) > 60 and "numpy" in pins and "pywin32" in pins  # all platforms are pinned
+    core = check_licenses.read_lock_names()
+    optional = check_licenses.read_lock_names(check_licenses.OPTIONAL_LOCK)
+    assert len(core) > 50 and "numpy" in core
+    # the default install contains no MCP SDK and therefore no pywin32 (whose wheel bundles an LGPL module)
+    assert "mcp" not in core and "pywin32" not in core
+    assert "mcp" in optional and "pywin32" in optional and "anthropic" in optional and set(core) <= set(optional)
+    pins = {**optional, **core}
     rows, _ = check_licenses.check()
     covered = {r["key"] for r in rows}
     assert set(pins) <= covered, sorted(set(pins) - covered)
     platform = check_licenses.load_section("platform_packages")
     for name, entry in platform.items():
-        assert name in pins, f"{name} is listed for another platform but not in the lock file"
+        assert name in pins, f"{name} is listed for another platform but not in a lock file"
         assert str(entry["source_url"]).startswith("https://") and check_licenses.evaluate(entry["verified_license"])[0]
     lock_spec = importlib.util.spec_from_file_location("check_lock", ROOT / "tools" / "check_lock.py")
     check_lock = importlib.util.module_from_spec(lock_spec)
@@ -98,6 +103,9 @@ def test_test_only_libraries_are_not_runtime_dependencies():
     dev = set(check_licenses.read_requirement_names(ROOT / "requirements-dev.txt"))
     assert {"lifelines", "scikit-posthocs"} <= dev and not {"lifelines", "scikit-posthocs"} & runtime
     assert not {"lifelines", "scikit-posthocs"} & set(check_licenses.read_lock_names())
+    assert "mcp" not in runtime  # optional extra: requirements-mcp.txt
+    reviews = check_licenses.load_section("bundled_review")
+    assert "adodbapi" in reviews["pywin32"]["finding"] and "LGPL" in reviews["pywin32"]["finding"]
 
 
 def test_wheels_with_bundled_binaries_or_copyleft_mentions_have_a_recorded_review():

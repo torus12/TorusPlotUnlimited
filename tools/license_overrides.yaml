@@ -40,12 +40,14 @@ packages:
 platform_packages:
   pywin32:
     verified_license: "PSF-2.0"
-    when: "Windows only"
+    when: "Windows only, and only with the optional MCP extra (requirements-mcp.txt)"
     source_url: "https://pypi.org/project/pywin32/"
     verified_on: "2026-11-13"
     reason: >
       PyPI metadata: license "PSF", classifier "Python Software Foundation License". Pulled in
-      on Windows by the MCP SDK.
+      on Windows by the MCP SDK only. Its wheel also contains the separate `adodbapi` module
+      under LGPL-2.1 (see bundled_review); for that reason the MCP SDK is an optional extra
+      and not part of the default install.
   httpx2-jsfetch:
     verified_license: "BSD-3-Clause"
     when: "browser (Emscripten/Pyodide) builds only; never installed on a desktop"
@@ -116,4 +118,24 @@ bundled_review:
       PSF-2.0 package. "GPL" appears only in the history section of the PSF license itself
       ("GPL-compatible doesn't mean that we're distributing Python under the GPL").
     source_url: "https://github.com/python/typing_extensions/blob/main/LICENSE"
+    verified_on: "2026-11-13"
+  pywin32:
+    finding: >
+      PSF-licensed package, installed on Windows only and only with the optional MCP extra.
+      The wheel bundles several components with their own license files: Pythonwin and win32
+      (PSF-style), Scintilla (permissive, HPND-style), IDLE-derived code (PSF) and `adodbapi`,
+      a separate pure-Python database module under LGPL-2.1. TorusPlot never imports
+      adodbapi; it is an unmodified, separately replaceable module inside a third-party
+      wheel that the user installs from PyPI. Because of it, the MCP SDK was moved out of
+      the default requirements (DECISIONS.md D-031).
+    source_url: "https://github.com/mhammond/pywin32/blob/main/adodbapi/license.txt"
+    verified_on: "2026-11-13"
+  pyarrow:
+    finding: >
+      Apache-2.0 package. On Windows the wheel carries two Microsoft Visual C++ runtime DLLs
+      (msvcp140.dll, msvcp140_atomic_wait.dll) in pyarrow.libs, redistributed under
+      Microsoft's Visual C++ Redistributable terms; no copyleft component. The bundled Arrow
+      C++ libraries and their third-party parts are listed in the wheel's LICENSE.txt and
+      NOTICE.txt (all permissive).
+    source_url: "https://github.com/apache/arrow/blob/main/LICENSE.txt"
     verified_on: "2026-11-13"

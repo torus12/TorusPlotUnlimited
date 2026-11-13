@@ -1,0 +1,11 @@
+# OPTIONAL: only needed for the MCP server (python -m torusplot.mcp_server), which lets an
+# AI agent such as Claude Desktop or Claude Code drive TorusPlot. Not installed by the
+# launcher. Install (exact, hash-checked versions):
+#     pip install --require-hashes -r requirements-optional-lock.txt
+# or just this extra:
+#     pip install -r requirements-mcp.txt
+#
+# Licensing note: on Windows the MCP SDK pulls in `pywin32` (PSF license), whose wheel also
+# contains an unrelated module, `adodbapi`, under LGPL-2.1. TorusPlot never imports it. It is
+# kept out of the default install; see tools/license_overrides.yaml (bundled_review).
+mcp>=2.0,<3

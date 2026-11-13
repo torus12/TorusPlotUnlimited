@@ -28,8 +28,25 @@ and "make a figure", and the assistant calls them on your behalf.
 ## Before you start
 
 You need TorusPlot installed in its virtual environment (the `.venv` folder inside the
-TorusPlot folder). The MCP SDK (`mcp`, MIT license) is one of TorusPlot's normal
-dependencies, so there is nothing extra to install.
+TorusPlot folder; start the app once with `run_torusplot.bat` or `run_torusplot.sh` to
+create it).
+
+**One extra install step.** The MCP server needs the MCP SDK (`mcp`, MIT license), which is
+an optional extra and is *not* installed by the launcher. Open a terminal in the TorusPlot
+folder and run:
+
+| System | Command |
+|---|---|
+| Windows | `.venv\Scripts\python.exe -m pip install --require-hashes -r requirements-optional-lock.txt` |
+| macOS / Linux | `.venv/bin/python -m pip install --require-hashes -r requirements-optional-lock.txt` |
+
+(That installs the exact, hash-checked versions of the optional extras. If it does not work
+on your Python version, use `-r requirements-mcp.txt` instead.)
+
+Why it is optional: on Windows the MCP SDK brings in the `pywin32` package, whose wheel also
+contains an unrelated module (`adodbapi`) under the LGPL-2.1 license. TorusPlot never uses
+that module, but it is kept out of the default install so that the standard setup contains
+only permissively licensed components.
 
 You will need the full path of the Python program inside that virtual environment:
 

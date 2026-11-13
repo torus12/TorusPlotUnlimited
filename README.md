@@ -134,7 +134,7 @@ Turn them on under **Settings**. Nothing is sent anywhere unless you enable a pr
 | Match this figure | Upload an image of a figure you like; its *style* (not its data) is applied to your data |
 | Digitize | Extract approximate points from an image of a plot (clearly labelled approximate; statistics blocked unless you override) |
 | Outside AI instructions | Paste JSON or instructions written by any chatbot; see [docs/PROMPT_TEMPLATE_FOR_OUTSIDE_AI.md](docs/PROMPT_TEMPLATE_FOR_OUTSIDE_AI.md) |
-| MCP server | Let an AI agent drive TorusPlot's engine directly; see [docs/MCP.md](docs/MCP.md) |
+| MCP server | Let an AI agent drive TorusPlot's engine directly (one optional install step); see [docs/MCP.md](docs/MCP.md) |
 
 Providers:
 
@@ -156,14 +156,14 @@ python cli.py recommend --sample nanoparticle_size      # which test, and why
 python cli.py analyze --sample nanoparticle_size --analysis anova_oneway
 python cli.py demo --out output/demo                    # full pipeline on synthetic data
 python cli.py render --project my.tplot --formats svg pdf tiff
-python -m torusplot.mcp_server                          # MCP server for AI agents
+python -m torusplot.mcp_server                          # MCP server for AI agents (needs requirements-mcp.txt)
 ```
 
 <!-- dev-only:start -->
 Developer checks (development repository only):
 
 ```bash
-pip install --require-hashes -r requirements-lock.txt
+pip install --require-hashes -r requirements-optional-lock.txt   # runtime + optional extras, pinned
 pip install -r requirements-dev.txt
 python -m pytest                 # full test suite
 python -m ruff check .           # lint

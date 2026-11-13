@@ -43,7 +43,18 @@ def main(argv: list[str] | None = None) -> int:
 
     matplotlib.use("Agg")  # never open a window; figures are rendered off-screen
 
-    from .server import build_server
+    try:
+        from .server import build_server
+    except ModuleNotFoundError as exc:
+        if exc.name and exc.name.split(".")[0] == "mcp":
+            print(
+                "The TorusPlot MCP server needs one optional package that is not installed by default.\n"
+                "Install it with:  python -m pip install -r requirements-mcp.txt\n"
+                "(see docs/MCP.md)",
+                file=sys.stderr,
+            )
+            return 1
+        raise
 
     server = build_server(output_dir=args.output_dir, log_level=args.log_level)
     print(

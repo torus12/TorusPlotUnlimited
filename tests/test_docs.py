@@ -13,7 +13,8 @@ DOCS = ROOT / "docs"
 
 REQUIRED_FILES = [
     "LICENSE", "README.md", "DECISIONS.md", "PROGRESS.md", "THIRD_PARTY_NOTICES.md", ".env.example",
-    "requirements.txt", "requirements-lock.txt", "requirements-ai.txt", "requirements-dev.txt",
+    "requirements.txt", "requirements-lock.txt", "requirements-ai.txt", "requirements-mcp.txt",
+    "requirements-optional-lock.txt", "requirements-dev.txt",
     "run_torusplot.bat", "run_torusplot.sh", "cli.py", "docs/COMMERCIAL_RELEASE_CHECKLIST.md",
     "docs/USER_GUIDE.md", "docs/STATS_METHODS.md", "docs/MCP.md", "docs/PROMPT_TEMPLATE_FOR_OUTSIDE_AI.md",
     "docs/REFERENCE_NOTES.md", "docs/MODEL_LICENSE_RESEARCH.md", "examples/README.md",
