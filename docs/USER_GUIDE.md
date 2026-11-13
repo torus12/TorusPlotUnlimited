@@ -587,7 +587,7 @@ Result ID     sr_xxxxxxxx  (random; yours will differ)
 Statistic     t(14) = 4.227
 P value       0.0008  ***  (two-sided; significant at alpha = 0.05)
 Effect size   Cohen's d = 2.113 (95% CI 0.8407 to 3.34; large)
-Estimates     Mean difference (Bulk mixing - Sonication) = 22.77 (95% CI 11.22 to 34.33; P = 0.0008)
+Estimates     Mean difference (Bulk mixing - Sonication) = 22.78 (95% CI 11.22 to 34.33; P = 0.0008)
               Mean of Bulk mixing = 145.1 (95% CI 136.4 to 153.9)
               Mean of Sonication = 122.4 (95% CI 113.1 to 131.6)
 Sample size   Bulk mixing: 8; Sonication: 8  (total 16)
@@ -599,11 +599,11 @@ Checks        PASS  Normality (Shapiro-Wilk) [Bulk mixing], P = 0.1712
 
 What TorusPlot writes under the result:
 
-> The mean of Bulk mixing (145.1, n = 8) was 22.77 higher than the mean of Sonication (122.4, n = 8); difference Bulk mixing - Sonication = 22.77 (95% CI 11.22 to 34.33). By the unpaired t test this difference is statistically significant (P = 0.0008, alpha = 0.05); t(14) = 4.227. This is evidence that the population means differ. Cohen's d = 2.11 (95% CI 0.8407 to 3.34), a large effect by Cohen's conventions.
+> The mean of Bulk mixing (145.1, n = 8) was 22.78 higher than the mean of Sonication (122.4, n = 8); difference Bulk mixing - Sonication = 22.78 (95% CI 11.22 to 34.33). By the unpaired t test this difference is statistically significant (P = 0.0008, alpha = 0.05); t(14) = 4.227. This is evidence that the population means differ. Cohen's d = 2.11 (95% CI 0.8407 to 3.34), a large effect by Cohen's conventions.
 
 **How to read it.**
 
-- Mean difference (Bulk mixing - Sonication) = 22.77 (95% CI 11.22 to 34.33; P = 0.0008). This is first group minus second group. The 95% CI is the range of true differences that is compatible with the data.
+- Mean difference (Bulk mixing - Sonication) = 22.78 (95% CI 11.22 to 34.33; P = 0.0008). This is first group minus second group. The 95% CI is the range of true differences that is compatible with the data.
 - t(14) = 4.227, P = 0.0008: the difference is statistically significant at alpha = 0.05. The P value is the probability of a difference at least this large if the two population means were equal.
 - Cohen's d = 2.113 (95% CI 0.8407 to 3.34). This is the difference in units of the pooled SD. The interval is wide because n is small.
 - Checks: normality of each group and equal variance. Both pass here.
@@ -614,7 +614,7 @@ What TorusPlot writes under the result:
 
 > The two groups were compared with an unpaired Student's t test (two-tailed, alpha = 0.05).
 
-Numbers to quote with it: t(14) = 4.227; P = 0.0008; Mean difference (Bulk mixing - Sonication) = 22.77 (95% CI 11.22 to 34.33); Cohen's d = 2.113 (95% CI 0.8407 to 3.34). Always add the sample size (n) of every group.
+Numbers to quote with it: t(14) = 4.227; P = 0.0008; Mean difference (Bulk mixing - Sonication) = 22.78 (95% CI 11.22 to 34.33); Cohen's d = 2.113 (95% CI 0.8407 to 3.34). Always add the sample size (n) of every group.
 
 #### Welch's t test
 
@@ -683,10 +683,10 @@ Statistic     t(9) = 9.744
 P value       <0.0001  ****  (two-sided; significant at alpha = 0.05)
 Effect size   Cohen's d_z (paired) = 3.081 (95% CI 1.54 to 4.599; large)
 Estimates     Mean of differences (Before - After) = 88.9 (95% CI 68.26 to 109.5; P < 0.0001)
-              Correlation between pairs (Pearson r) = 0.9 (95% CI 0.624 to 0.9764; P = 0.0004)
+              Correlation between pairs (Pearson r; two-tailed P) = 0.9 (95% CI 0.624 to 0.9764; P = 0.0004)
 Sample size   Before: 10; After: 10  (total 10)
 Checks        PASS  Normality (Shapiro-Wilk) [Difference (Before - After)], P = 0.7543
-              PASS  Effective pairing (correlation between pairs), P = 0.0002
+              PASS  Effective pairing (correlation between pairs; one-tailed P), P = 0.0002
               plus 1 design assumption(s) stated in the app (they cannot be checked from the numbers)
 ```
 
@@ -698,7 +698,7 @@ What TorusPlot writes under the result:
 
 - Mean of differences (Before - After) = 88.9 (95% CI 68.26 to 109.5; P < 0.0001). This is the mean of the within-animal differences (first column minus second column).
 - t(9) = 9.744, P < 0.0001: statistically significant.
-- Correlation between pairs (Pearson r) = 0.9 (95% CI 0.624 to 0.9764; P = 0.0004). Pairing helps when this correlation is positive. It was effective here.
+- Correlation between pairs (Pearson r; two-tailed P) = 0.9 (95% CI 0.624 to 0.9764; P = 0.0004). Pairing helps when this correlation is positive. It was effective here.
 - Cohen's d_z (paired) = 3.081. For paired data this is the mean difference divided by the SD of the differences (d_z). It is not comparable with Cohen's d from an unpaired test.
 - The normality check is on the differences, not on each column.
 
@@ -821,9 +821,9 @@ P value       0.0020  **  (two-sided; significant at alpha = 0.05)
 Effect size   matched-pairs rank-biserial r = 1 (95% CI 0.3595 to 1; large)
 Estimates     Hodges-Lehmann median difference (Before - After) = 88 (95% CI 67.5 to 110)
               Median of differences = 86
-              Correlation between pairs (Spearman r) = 0.8171 (P = 0.0039)
+              Correlation between pairs (Spearman r; two-tailed P) = 0.8171 (P = 0.0039)
 Sample size   Before: 10; After: 10  (total 10)
-Checks        PASS  Effective pairing (correlation between pairs), P = 0.0020
+Checks        PASS  Effective pairing (correlation between pairs; one-tailed P), P = 0.0020
               plus 2 design assumption(s) stated in the app (they cannot be checked from the numbers)
 ```
 
@@ -877,7 +877,7 @@ What TorusPlot writes under the result:
 
 Warnings shown with this result:
 
-- Some differences are tied in size, so an exact P value is not available; the normal approximation with tie correction was used.
+- Some differences are tied in size, so the tabulated exact distribution does not apply; the normal approximation with tie correction was used.
 
 **How to read it.**
 
@@ -2416,7 +2416,7 @@ Alpha                                   0.05
 ```text
 Power analysis: unpaired t test
 Effect size (Cohen's d)                 0.8
-Sample size, exact (per group)          5
+Sample size (per group)                 5
 Sample size of group 2                  5
 Total sample size                       10
 Power                                   0.2007
@@ -2957,7 +2957,7 @@ The messages below are the real texts TorusPlot shows. In the app they follow th
 
 | The app says | Message | What to do |
 |---|---|---|
-| The analysis could not be run: | Table 'Digitized' holds APPROXIMATE digitized data (for reference only). Statistical tests are blocked on it. Pass allow_approximate=True (or tick the override box) only if you understand the numbers are estimates read off an image. | The table was digitized from an image. Its numbers are estimates. Use measured data. If you only want a rough reference value, tick *I understand these are estimates read off an image. Allow statistics anyway.* on page **2 Analyze**; the result is then marked APPROXIMATE. |
+| The analysis could not be run: | Table 'Digitized' holds APPROXIMATE values digitized from an image (for reference only), so statistical tests are switched off for it. If a rough reference value is all you need, tick 'I understand these are estimates read off an image. Allow statistics anyway.' on page 2 Analyze; the result is then marked APPROXIMATE. (In a script, pass allow_approximate=True.) | The table was digitized from an image. Its numbers are estimates. Use measured data. If you only want a rough reference value, tick *I understand these are estimates read off an image. Allow statistics anyway.* on page **2 Analyze**; the result is then marked APPROXIMATE. |
 | The analysis could not be run: | 'Fisher's exact test' is not available for a Column table (valid table types: contingency). | The analysis does not fit the table type. In the app the menu already hides such analyses. Re-create the table with the right type (section 2). |
 | The analysis could not be run: | A has 1 value(s); a t test needs at least 2. | A group has too few values. Add replicates. Check that numbers were not read as text (a stray letter or unit in a cell turns it into a missing value). |
 | The analysis could not be run: | Unknown group 'Bulk'. Available groups: ['Bulk mixing', 'Sonication', 'Extrusion', 'Microfluidic']. | The group name does not exist in the table. Pick the group from the list; names are case-sensitive. |
