@@ -105,3 +105,67 @@ Every decision made autonomously during the build is logged here:
   `deepseek-r1` distills based on Llama (rejected for the same reason), `qwen2.5:3b` /
   `:72b` (rejected: non-Apache license).
 - **Reason:** The brief allows only Apache-2.0 / MIT models as defaults.
+
+## D-010 FigureSpec is a layered, declarative schema (pydantic) with strict validation
+- **Decision:** A figure = `plot_type` + data binding + an ordered list of layers using a
+  small verb vocabulary (`mean_bar`, `sem_errorbar`, `data_points_beeswarm`, `boxplot`,
+  `curve_fit` ...), plus axes, style (preset + overrides), layout in millimetres, legend,
+  export options. Empty `layers` means "the plot type's defaults". Unknown fields are
+  rejected (`extra="forbid"`). Multi-panel figures are a separate `CompositionSpec` that
+  refers to figures by name.
+- **Alternatives:** free-form matplotlib code per figure (rejected: not reproducible, not
+  safe for AI); one flat options dict (rejected: cannot express layer order/add/remove).
+- **Reason:** The add/adjust/remove verb idea (studied in the MIT-licensed tidyplots R
+  package; no code used) makes specs short, diffable and easy for a model to emit, and
+  strict validation gives precise error messages to feed back to a model.
+
+## D-011 How "AI never touches statistics" is enforced in code
+- **Decision:** (1) `StatAnnotation` has **no field** that can hold a number, star string or
+  label; it only holds a `stat_result_id` (+ optional comparison IDs / group pairs). The
+  renderer derives every bracket label from `Comparison.p_adjusted`/`p_value` of the
+  referenced `StatResult`. (2) Titles, free-text annotations and layer labels are rejected
+  at validation if they look like a typed statistic ("p < 0.05", "***", "ns"). (3) A missing
+  result ID draws nothing and raises a visible warning; it never falls back to text.
+- **Alternatives:** trust the prompt to keep the model honest (rejected: not enforceable).
+- **Reason:** Makes the hard rule a property of the schema rather than of model behaviour;
+  covered by tests in `tests/spec/test_figure_spec.py` and `tests/plot/test_render.py`.
+
+## D-012 Two bracket engines: TorusPlot's own (default) and statannotations (optional)
+- **Decision:** Significance brackets are drawn by TorusPlot's own module by default;
+  `StatAnnotation.engine = "statannotations"` routes simple one-factor categorical plots
+  through the statannotations library in its custom-annotation mode. Both receive label
+  strings computed from the StatResult, so they always show the same text (tested).
+- **Alternatives:** statannotations everywhere (rejected: it only supports seaborn-style
+  categorical plots, so grouped/factorial cell comparisons, log axes handled our way, and
+  multi-panel id naming would be inconsistent between plot types).
+- **Reason:** One consistent look across every plot type, while still honouring the brief's
+  request to use statannotations with precomputed results where it applies.
+
+## D-013 Bundled fonts: Inter 4.1, Source Sans 3 (3.052), Liberation Sans 2.1.5 (all OFL-1.1)
+- **Decision:** Bundle four styles of each family, unmodified, with their OFL texts
+  (`torusplot/plot/fonts/`). Liberation Sans is the Arial-metric substitute. Inter and
+  Source Sans 3 came from the projects' GitHub releases; Liberation Sans 2.1.5 files were
+  taken from the Debian `fonts-liberation` package (the upstream release download was
+  blocked by the sandbox proxy); the font files' own name tables state OFL-1.1.
+- **Alternatives:** Roboto, Lato (not needed: three families cover UI, journal, humanist).
+- **Reason:** OFL-1.1 permits bundling with commercial closed-source software. No
+  Arial/Helvetica files are shipped; system fonts can be selected by name at runtime.
+
+## D-014 Golden images: generated only by an explicit, logged script
+- **Decision:** `tools/regenerate_goldens.py --reason "..."` is the only way golden images
+  are (re)written; each run appends to `tests/golden/REGENERATION_LOG.md`. Tests compare at
+  80 dpi with an RMS tolerance of 12 (override with `TORUSPLOT_GOLDEN_TOL`). Point jitter
+  uses a deterministic golden-ratio sequence (no random generator), and `matplotlib` is
+  pinned to the 3.11 series, so images are stable across platforms.
+- **First generation:** 2026-11-13, "Initial golden images (M3/M4)".
+- **Alternatives:** exact pixel equality (rejected: brittle across OS font rasterisation).
+- **Reason:** Catches unintended visual changes without flaky failures.
+
+## D-015 SVG validity is checked with an XML parser and xmllint; Inkscape was not available
+- **Decision:** Exported SVGs are verified in tests to be well-formed XML with real
+  `<text>` elements, unique ids, named groups and no dangling references
+  (`torusplot.export.validate_svg`, plus `xmllint --noout` when installed).
+- **Alternatives:** open each file in Inkscape/Graphite in CI (not possible: neither is
+  installed in the build sandbox, and the proxy blocks installing them).
+- **Reason:** Those checks are the properties vector editors need. Manual spot-check in
+  Inkscape/Graphite is listed as a follow-up in FINAL_REPORT.md.

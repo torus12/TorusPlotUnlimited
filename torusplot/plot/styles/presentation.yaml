@@ -1,0 +1,43 @@
+# TorusPlot style preset. All sizes in points unless the key ends in _mm.
+name: Presentation (large type)
+order: 7
+description: 'For slides and posters: large type, thick lines and big markers that
+  read from the back of the room.'
+width_mm: 220
+height_mm: 150
+font_family: Inter
+font_size: 16
+title_size: 20
+label_size: 17
+tick_size: 15
+legend_size: 14
+axis_linewidth: 1.8
+line_width: 2.6
+errorbar_linewidth: 1.8
+cap_size: 5.0
+point_size: 7.0
+point_alpha: 0.9
+point_edge_color: '#FFFFFF'
+point_edge_width: 0.6
+point_color_mode: dark
+bar_width: 0.64
+bar_alpha: 0.9
+bar_edge_color: group
+bar_edge_width: 1.6
+bar_fill: true
+spines:
+- left
+- bottom
+tick_direction: out
+tick_length: 6.0
+grid: false
+grid_color: '#E3E6EA'
+background: '#FFFFFF'
+text_color: '#16181D'
+axis_color: '#16181D'
+palette: Torus
+colormap: viridis
+bracket_linewidth: 1.6
+annotation_size: 16
+title_weight: bold
+label_weight: normal

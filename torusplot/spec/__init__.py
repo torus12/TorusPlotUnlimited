@@ -1,0 +1,53 @@
+"""FigureSpec schema: the declarative, validated description of figures."""
+
+from .figure import (
+    PLOT_TYPES,
+    SPEC_VERSION,
+    AxesSpec,
+    AxisSpec,
+    CompositionSpec,
+    DataBinding,
+    ExportSpec,
+    FigureSpec,
+    Layer,
+    LayoutSpec,
+    LegendSpec,
+    PanelSpec,
+    StatAnnotation,
+    StyleSpec,
+    TextAnnotation,
+    default_layers,
+    plot_types_for,
+)
+from .schema import (
+    composition_spec_schema,
+    figure_spec_schema,
+    figure_spec_schema_json,
+    minimal_example,
+    plot_type_guide,
+)
+
+__all__ = [
+    "PLOT_TYPES",
+    "SPEC_VERSION",
+    "AxesSpec",
+    "AxisSpec",
+    "CompositionSpec",
+    "DataBinding",
+    "ExportSpec",
+    "FigureSpec",
+    "Layer",
+    "LayoutSpec",
+    "LegendSpec",
+    "PanelSpec",
+    "StatAnnotation",
+    "StyleSpec",
+    "TextAnnotation",
+    "composition_spec_schema",
+    "default_layers",
+    "figure_spec_schema",
+    "figure_spec_schema_json",
+    "minimal_example",
+    "plot_type_guide",
+    "plot_types_for",
+]
