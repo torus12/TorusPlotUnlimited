@@ -45,6 +45,13 @@ def adjust_pvalues(pvalues: Iterable[float], method: str = "holm") -> np.ndarray
     if m == 0:
         return out
     pv = np.clip(p[valid], 0.0, 1.0)
+    with np.errstate(divide="ignore", invalid="ignore"):  # log1p(-1) = -inf is the right limit for p = 1
+        adj = _adjust(pv, key, m)
+    out[valid] = np.clip(adj, 0.0, 1.0)
+    return out
+
+
+def _adjust(pv: np.ndarray, key: str, m: int) -> np.ndarray:
     if key == "none":
         adj = pv.copy()
     elif key == "bonferroni":
@@ -66,5 +73,4 @@ def adjust_pvalues(pvalues: Iterable[float], method: str = "holm") -> np.ndarray
         step = np.minimum.accumulate(step[::-1])[::-1]
         adj = np.empty(m)
         adj[order] = np.minimum(step, 1.0)
-    out[valid] = np.clip(adj, 0.0, 1.0)
-    return out
+    return adj

@@ -153,3 +153,26 @@ def test_magnitude_labels():
 def test_kw_and_friedman_effect_sizes():
     assert es.epsilon_squared_kw(6.0, 13, 3).value == pytest.approx(0.5)
     assert es.kendall_w(8.0, 10, 3).value == pytest.approx(0.4)
+
+
+def test_hedges_g_undefined_for_one_degree_of_freedom():
+    g = es.cohen_d_one_sample(np.array([1.0, 3.0]), hedges=True)
+    assert g.value is None and g.ci_low is None
+    assert es.cohen_d_one_sample(np.array([1.0, 3.0])).value is not None
+
+
+def test_is_constant_uses_floating_point_spacing():
+    from torusplot.stats._utils import is_constant, p_phrase
+
+    assert is_constant(np.array([5.0, 5.0, 5.0])) and is_constant(np.array([1e12, 1e12]))
+    assert not is_constant(np.array([1e12 + 0.2, 1e12 + 0.4]))  # tiny but real spread on a huge offset
+    assert not is_constant(np.array([1.0, 1.0 + 1e-9]))
+    assert is_constant(np.array([0.1 + 0.2, 0.3]))  # rounding noise only
+    assert p_phrase(0.00001) == "P < 0.0001" and p_phrase(0.0312) == "P = 0.0312" and p_phrase(None) == "P not available"
+
+
+def test_is_constant_treats_underflowing_spread_as_constant():
+    from torusplot.stats._utils import is_constant
+
+    assert is_constant(np.array([0.0, 0.0, 1.1e-153]))  # variance and higher moments would underflow
+    assert not is_constant(np.array([0.0, 0.0, 1e-60]))

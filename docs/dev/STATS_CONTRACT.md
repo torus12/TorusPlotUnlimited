@@ -12,8 +12,9 @@ Read it fully before writing anything.
   primary paper in the module/function docstring.
 * Allowed libraries: `numpy`, `pandas`, `scipy`, `statsmodels`, `scikit_posthocs`
   (import name), `lifelines`. Tests may also use `pytest`, `hypothesis`.
-* Never write the trademarks "GraphPad" or "Prism" (or journal/publisher names as style
-  names) anywhere: code, comments, tests, docs. Say "other statistics packages".
+* Never write the names of other commercial statistics products, or journal/publisher
+  names as style names, anywhere: code, comments, tests, docs (the banned list is enforced by
+  `tests/test_docs.py`). Say "other statistics packages".
 * Do **not** run any `git` command. Do not edit files you do not own (ownership is in
   your task brief). Other people are editing other files in this repo right now.
 * Python 3.11 syntax. Cross-platform (Windows + Linux): no shell-outs, use `pathlib`,

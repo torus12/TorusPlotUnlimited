@@ -155,6 +155,8 @@ def _smd_result(
     lo_ncp, hi_ncp = _nct_ncp_limits(t_obs, df, level)
     lo, hi = lo_ncp * scale, hi_ncp * scale
     j = hedges_correction(df) if correct else 1.0
+    if math.isnan(j):  # Hedges' correction is undefined for df <= 1 (e.g. n = 2 paired)
+        return EffectSize(name=name, value=None, ci_level=level, target=target)
     value = d * j
     return EffectSize(
         name=name,

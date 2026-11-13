@@ -74,12 +74,23 @@ def require_n(arr: np.ndarray, minimum: int, name: str, what: str = "this analys
         )
 
 
+#: Spreads below this are treated as zero: their squares/cubes underflow in double precision,
+#: so variances and higher moments cannot be computed reliably.
+_TINY_SPREAD = 1e-75
+
+
 def is_constant(arr: np.ndarray) -> bool:
-    """True if all values are identical (zero variance), within floating-point noise."""
+    """True if all values are identical (zero variance), within floating-point rounding.
+
+    The tolerance is a few units in the last place of the largest magnitude, so data with
+    a huge offset and a tiny but real spread (e.g. 1e12 + 0.1, 1e12 + 0.3) are *not*
+    mistaken for a constant. A spread so small that its powers underflow (below 1e-75) is
+    also treated as constant.
+    """
     if arr.size < 2:
         return True
-    scale = max(1.0, float(np.max(np.abs(arr))))
-    return bool(np.ptp(arr) <= 1e-12 * scale)
+    scale = float(np.max(np.abs(arr)))
+    return bool(np.ptp(arr) <= max(4.0 * np.spacing(scale), _TINY_SPREAD))
 
 
 def fmt(value: float | None, digits: int = 4) -> str:
@@ -106,7 +117,7 @@ def p_phrase(p: float | None) -> str:
     text = format_p(p)
     if text == "n/a":
         return "P not available"
-    return f"P {text}" if text.startswith("<") else f"P = {text}"
+    return f"P < {text[1:]}" if text.startswith("<") else f"P = {text}"
 
 
 def sig_phrase(p: float | None, alpha: float = 0.05) -> str:

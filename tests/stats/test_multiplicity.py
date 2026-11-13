@@ -47,3 +47,13 @@ def test_adjusted_never_below_raw_and_capped():
     for method in ("bonferroni", "sidak", "holm", "holm-sidak", "fdr_bh"):
         adj = adjust_pvalues(p, method)
         assert np.all(adj >= p - 1e-15) and np.all(adj <= 1.0)
+
+
+def test_p_of_exactly_one_gives_no_warning():
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        for method in ("sidak", "holm-sidak", "holm", "bonferroni", "fdr_bh"):
+            out = adjust_pvalues([1.0, 0.5, 0.01], method)
+            assert out[0] == 1.0 and np.all(out <= 1.0)
