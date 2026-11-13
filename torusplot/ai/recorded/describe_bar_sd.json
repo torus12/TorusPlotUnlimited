@@ -1,0 +1,29 @@
+{
+ "task": "describe_figure",
+ "keywords": [
+  "bar",
+  "sd"
+ ],
+ "table_kinds": [
+  "column",
+  "grouped"
+ ],
+ "description": "Bar graph with SD error bars.",
+ "response": {
+  "plot_type": "bar",
+  "data": {
+   "table": "{{CURRENT_TABLE}}"
+  },
+  "layers": [
+   {
+    "type": "mean_bar"
+   },
+   {
+    "type": "sd_errorbar"
+   },
+   {
+    "type": "data_points_jitter"
+   }
+  ]
+ }
+}

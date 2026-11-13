@@ -1,0 +1,17 @@
+{
+ "task": "describe_figure",
+ "keywords": [
+  "violin"
+ ],
+ "table_kinds": [
+  "column",
+  "grouped"
+ ],
+ "description": "Violin plot with the raw points.",
+ "response": {
+  "plot_type": "violin",
+  "data": {
+   "table": "{{CURRENT_TABLE}}"
+  }
+ }
+}

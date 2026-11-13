@@ -1,0 +1,21 @@
+{
+ "task": "describe_figure",
+ "keywords": [
+  "log"
+ ],
+ "table_kinds": [
+  "xy"
+ ],
+ "description": "XY graph with a logarithmic X axis.",
+ "response": {
+  "plot_type": "xy",
+  "data": {
+   "table": "{{CURRENT_TABLE}}"
+  },
+  "axes": {
+   "x": {
+    "scale": "log10"
+   }
+  }
+ }
+}

@@ -1,0 +1,20 @@
+{
+ "task": "describe_figure",
+ "keywords": [
+  "box"
+ ],
+ "table_kinds": [
+  "column",
+  "grouped"
+ ],
+ "description": "Box plot with the raw points.",
+ "response": {
+  "plot_type": "box",
+  "data": {
+   "table": "{{CURRENT_TABLE}}"
+  },
+  "style": {
+   "palette": "Okabe-Ito"
+  }
+ }
+}

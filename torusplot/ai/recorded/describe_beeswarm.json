@@ -1,0 +1,17 @@
+{
+ "task": "describe_figure",
+ "keywords": [
+  "beeswarm"
+ ],
+ "table_kinds": [
+  "column",
+  "grouped"
+ ],
+ "description": "Beeswarm of every value.",
+ "response": {
+  "plot_type": "beeswarm",
+  "data": {
+   "table": "{{CURRENT_TABLE}}"
+  }
+ }
+}

@@ -1,0 +1,31 @@
+{
+ "task": "describe_figure",
+ "keywords": [
+  "bar"
+ ],
+ "table_kinds": [
+  "column",
+  "grouped"
+ ],
+ "description": "Bar graph with SEM error bars and every data point.",
+ "response": {
+  "plot_type": "bar",
+  "data": {
+   "table": "{{CURRENT_TABLE}}"
+  },
+  "layers": [
+   {
+    "type": "mean_bar"
+   },
+   {
+    "type": "sem_errorbar"
+   },
+   {
+    "type": "data_points_jitter"
+   }
+  ],
+  "style": {
+   "preset": "Torus Signature"
+  }
+ }
+}

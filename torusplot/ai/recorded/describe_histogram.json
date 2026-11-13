@@ -1,0 +1,17 @@
+{
+ "task": "describe_figure",
+ "keywords": [
+  "histogram"
+ ],
+ "table_kinds": [
+  "column",
+  "xy"
+ ],
+ "description": "Histogram of the values.",
+ "response": {
+  "plot_type": "histogram",
+  "data": {
+   "table": "{{CURRENT_TABLE}}"
+  }
+ }
+}

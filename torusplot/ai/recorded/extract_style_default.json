@@ -1,0 +1,18 @@
+{
+ "task": "extract_style",
+ "keywords": [],
+ "description": "Neutral style answer: defers to the deterministic measurements.",
+ "response": {
+  "plot_type": null,
+  "colors": [],
+  "background": null,
+  "text_color": null,
+  "has_top_right_spines": null,
+  "grid": null,
+  "font_category": "sans",
+  "bar_edge": null,
+  "error_bars": null,
+  "points_shown": null,
+  "legend_position": null
+ }
+}

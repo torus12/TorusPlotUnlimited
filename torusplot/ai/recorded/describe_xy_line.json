@@ -1,0 +1,27 @@
+{
+ "task": "describe_figure",
+ "keywords": [
+  "line"
+ ],
+ "table_kinds": [
+  "xy"
+ ],
+ "description": "XY graph: mean line, SEM error bars, mean markers.",
+ "response": {
+  "plot_type": "xy",
+  "data": {
+   "table": "{{CURRENT_TABLE}}"
+  },
+  "layers": [
+   {
+    "type": "mean_line"
+   },
+   {
+    "type": "sem_errorbar"
+   },
+   {
+    "type": "mean_dot"
+   }
+  ]
+ }
+}
