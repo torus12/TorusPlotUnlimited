@@ -26,6 +26,8 @@ BANNED = re.compile(r"graph\s?pad|\bprism\b", re.IGNORECASE)
 #: Files that may name other products because they are provenance / policy records.
 ALLOWED_TO_NAME = {"docs/REFERENCE_NOTES.md", "DECISIONS.md", "FINAL_REPORT.md", "tests/test_docs.py",
                    "tools/build_user_guide.py", "docs/COMMERCIAL_RELEASE_CHECKLIST.md",
+                   "docs/audit/LICENSE_AUDIT_REPORT.md", "tests/audit/test_stats_audit_part1.py",
+                   "tests/audit/test_stats_audit_part2.py",
                    "tests/stats/test_registry_integration.py", "tests/plot/test_styles_palettes.py"}
 TEXT_SUFFIXES = {".py", ".md", ".yaml", ".yml", ".toml", ".txt", ".bat", ".sh", ".svg", ".json", ".js", ".csv", ".cfg"}
 
