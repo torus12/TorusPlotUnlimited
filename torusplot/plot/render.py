@@ -43,7 +43,7 @@ from .prepare import (
     prepare_xy,
     summarize,
 )
-from .styles import rc_params, resolve_style
+from .styles import rc_params, resolve_style, style_context
 
 MM_PER_INCH = 25.4
 CATEGORICAL = {
@@ -101,7 +101,7 @@ def render_figure(
     tables, results = _unpack(tables, results)
     style = resolve_style(spec.style)
     rc = rc_params(style)
-    with mpl.rc_context(rc):
+    with style_context(rc):
         width = spec.layout.width_mm or style["width_mm"]
         height = spec.layout.height_mm or style["height_mm"]
         fig = Figure(figsize=(width / MM_PER_INCH, height / MM_PER_INCH), layout="constrained")
@@ -679,10 +679,10 @@ def _draw_xy(ctx: PanelContext, data: XYData, layers: list[Layer], results: Mapp
                 curve_results.append((layer, res))
     x_is_log = any(bool(res.extra.get("x_is_log")) for _, res in curve_results)
     log_x = spec.axes.x.scale in {"log10", "log2"} or (
-        spec.plot_type == "dose_response" and "scale" not in spec.axes.x.model_fields_set and not x_is_log
+        spec.plot_type == "dose_response" and spec.axes.x.scale == "auto" and not x_is_log
         and all(np.all(s.x[np.isfinite(s.x)] >= 0) for s in data.series)
     )
-    ctx._force_log_x = log_x and spec.axes.x.scale == "linear"
+    ctx._force_log_x = log_x and spec.axes.x.scale == "auto"
     dropped = 0
 
     def xmask(x: np.ndarray) -> np.ndarray:

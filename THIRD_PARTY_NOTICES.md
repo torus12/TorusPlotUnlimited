@@ -35,7 +35,7 @@ modify them. Each package remains under its own license. This file is generated 
 | jsonschema-specifications | 2025.9.1 | MIT | https://github.com/python-jsonschema/jsonschema-specifications | no (transitive) |
 | kiwisolver | 1.5.1 | BSD License | https://github.com/nucleic/kiwi | no (transitive) |
 | lazy-loader | 0.6 | BSD-3-Clause | https://github.com/scientific-python/lazy-loader | no (transitive) |
-| lifelines | 0.30.0 | MIT License | https://github.com/CamDavidsonPilon/lifelines | yes |
+| lifelines | 0.30.3 | MIT License | https://github.com/CamDavidsonPilon/lifelines | yes |
 | MarkupSafe | 3.0.4 | BSD-3-Clause | https://github.com/pallets/markupsafe/ | no (transitive) |
 | matplotlib | 3.11.2 | Python Software Foundation License | https://matplotlib.org | yes |
 | mcp | 2.3.0 | MIT License | https://modelcontextprotocol.io | yes |
@@ -46,7 +46,7 @@ modify them. Each package remains under its own license. This file is generated 
 | openpyxl | 3.1.5 | MIT License | https://openpyxl.readthedocs.io | yes |
 | opentelemetry-api | 1.45.2 | Apache-2.0 | https://github.com/open-telemetry/opentelemetry-python/tree/main/opentelemetry-api | no (transitive) |
 | packaging | 26.3 | Apache-2.0 OR BSD-2-Clause | https://github.com/pypa/packaging | no (transitive) |
-| pandas | 3.1.1 | BSD-3-Clause | https://pandas.pydata.org | yes |
+| pandas | 2.3.3 | BSD License | https://pandas.pydata.org | yes |
 | patsy | 1.0.3 | BSD License | https://github.com/pydata/patsy | no (transitive) |
 | pillow | 13.0.0 | HPND (reported: MIT-CMU) | https://python-pillow.org | yes |
 | protobuf | 7.36.2 | 3-Clause BSD License | https://developers.google.com/protocol-buffers/ | no (transitive) |
@@ -59,6 +59,7 @@ modify them. Each package remains under its own license. This file is generated 
 | pyparsing | 3.3.3 | MIT | https://github.com/pyparsing/pyparsing/ | no (transitive) |
 | python-dateutil | 4.0.0 | BSD-3-Clause | https://github.com/dateutil/dateutil | no (transitive) |
 | python-multipart | 0.0.33 | Apache-2.0 | https://github.com/Kludex/python-multipart | no (transitive) |
+| pytz | 2026.6 | MIT License | http://pythonhosted.org/pytz | no (transitive) |
 | PyYAML | 6.0.3 | MIT License | https://pyyaml.org/ | yes |
 | referencing | 0.37.0 | MIT | https://github.com/python-jsonschema/referencing | no (transitive) |
 | requests | 2.34.2 | Apache Software License | https://github.com/psf/requests | no (transitive) |

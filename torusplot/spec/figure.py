@@ -333,7 +333,11 @@ def _reject_stat_text(value: str | None, where: str) -> str | None:
 
 class AxisSpec(_Spec):
     label: str | None = Field(default=None, description="Axis title; None = automatic from the data")
-    scale: Literal["linear", "log10", "log2", "symlog"] = "linear"
+    scale: Literal["auto", "linear", "log10", "log2", "symlog"] = Field(
+        default="auto",
+        description="'auto' = linear, except the X axis of dose-response plots, which becomes log10 "
+        "when the doses are on a linear scale",
+    )
     min: float | None = None
     max: float | None = None
     ticks: list[float] | None = Field(default=None, description="Explicit tick positions")

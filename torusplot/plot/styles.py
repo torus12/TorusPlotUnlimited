@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+import matplotlib as mpl
 import yaml
 
 from ..spec.figure import StyleSpec
@@ -135,3 +138,17 @@ def rc_params(style: dict[str, Any]) -> dict[str, Any]:
         "ps.fonttype": 42,
         "svg.hashsalt": "torusplot",
     }
+
+
+@contextmanager
+def style_context(rc: dict[str, Any]) -> Iterator[None]:
+    """Apply a TorusPlot style on top of matplotlib's *built-in* defaults.
+
+    Any matplotlibrc file or style sheet configured on the computer is ignored inside this
+    context, so the same FigureSpec renders identically on every machine (a system-wide
+    matplotlibrc that, say, disables text hinting would otherwise change every figure).
+    """
+    with mpl.rc_context():
+        mpl.rcdefaults()
+        mpl.rcParams.update(rc)
+        yield

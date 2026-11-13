@@ -17,12 +17,33 @@ _registered = False
 
 
 def register_bundled_fonts() -> list[str]:
-    """Make the bundled fonts available to matplotlib (idempotent). Returns file names."""
+    """Make the bundled fonts available to matplotlib (idempotent). Returns file names.
+
+    The bundled files always win over a system-installed font of the same family name
+    (system copies of those families are hidden from matplotlib for this process), so a
+    figure renders identically on every computer.
+    """
     global _registered
     files = sorted(FONT_DIR.glob("*/*.ttf"))
     if not _registered:
+        manager = font_manager.fontManager
         for path in files:
-            font_manager.fontManager.addfont(str(path))
+            manager.addfont(str(path))
+        root = str(FONT_DIR.resolve())
+        bundled, others = [], []
+        for entry in manager.ttflist:
+            try:
+                inside = str(Path(entry.fname).resolve()).startswith(root)
+            except OSError:
+                inside = False
+            if inside:
+                bundled.append(entry)
+            elif entry.name not in BUNDLED_FAMILIES:
+                others.append(entry)
+        manager.ttflist = bundled + others
+        cache = getattr(manager, "_findfont_cached", None)
+        if cache is not None and hasattr(cache, "cache_clear"):
+            cache.cache_clear()
         _registered = True
         _system_families.cache_clear()
     return [p.name for p in files]

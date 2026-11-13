@@ -297,3 +297,31 @@ def test_beeswarm_offsets_do_not_overlap_and_are_deterministic():
 def test_missing_font_falls_back_with_warning():
     fig = render_figure(FigureSpec(plot_type="bar", data={"table": cases.T_SIZE}, style={"font_family": "No Such Font 123"}), TABLES)
     assert any("not installed" in w for w in figure_warnings(fig))
+
+
+def test_rendering_ignores_machine_matplotlib_settings():
+    """A system matplotlibrc / user style must not change TorusPlot figures."""
+    from torusplot.export import figure_bytes
+
+    spec = SPECS["bar"]
+    reference = figure_bytes(render_figure(spec, TABLES, RESULTS), "png", dpi=80)
+    hostile = {"text.hinting": "no_hinting", "font.size": 23.0, "font.family": ["serif"], "axes.linewidth": 4.0,
+               "lines.linewidth": 5.0, "axes.facecolor": "#FFEEEE", "xtick.direction": "in", "savefig.dpi": 37}
+    with mpl.rc_context(hostile):
+        assert figure_bytes(render_figure(spec, TABLES, RESULTS), "png", dpi=80) == reference
+        fig = render_figure(spec, TABLES, RESULTS)
+    assert figure_bytes(fig, "png", dpi=80) == reference
+    before = dict(mpl.rcParams)
+    render_figure(spec, TABLES, RESULTS)
+    assert dict(mpl.rcParams) == before
+
+
+def test_bundled_fonts_win_over_system_copies():
+    from matplotlib import font_manager
+
+    from torusplot.plot.fonts import BUNDLED_FAMILIES, FONT_DIR, register_bundled_fonts
+
+    register_bundled_fonts()
+    for family in BUNDLED_FAMILIES:
+        found = font_manager.findfont(family, fallback_to_default=False)
+        assert str(FONT_DIR.resolve()) in str(__import__("pathlib").Path(found).resolve()), (family, found)

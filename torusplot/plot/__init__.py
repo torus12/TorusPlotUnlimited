@@ -6,7 +6,7 @@ from .fonts import BUNDLED_FAMILIES, available_families, register_bundled_fonts
 from .palettes import PALETTES, PaletteError, get_palette, palette_names, resolve_colors
 from .prepare import PlotError, summarize
 from .render import ERROR_LABELS, PanelContext, figure_warnings, render_figure, render_panel
-from .styles import StyleError, get_preset, preset_names, rc_params, resolve_style
+from .styles import StyleError, get_preset, preset_names, rc_params, resolve_style, style_context
 
 __all__ = [
     "BUNDLED_FAMILIES",
@@ -32,6 +32,7 @@ __all__ = [
     "render_panel",
     "resolve_colors",
     "resolve_style",
+    "style_context",
     "simulate_colors",
     "simulate_image",
     "summarize",

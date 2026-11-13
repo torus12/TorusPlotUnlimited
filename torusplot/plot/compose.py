@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-import matplotlib as mpl
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
 
@@ -15,7 +14,7 @@ from ..stats.result import StatResult
 from .fonts import register_bundled_fonts
 from .prepare import PlotError
 from .render import MM_PER_INCH, PanelContext, _unpack, render_panel
-from .styles import rc_params, resolve_style
+from .styles import rc_params, resolve_style, style_context
 
 
 def panel_letter(index: int, style: str) -> str:
@@ -70,7 +69,7 @@ def render_composition(
 
     base_style = resolve_style(specs[0].style)
     rc = rc_params(base_style)
-    with mpl.rc_context(rc):
+    with style_context(rc):
         fig = Figure(figsize=(comp.width_mm / MM_PER_INCH, comp.height_mm / MM_PER_INCH), layout="constrained")
         FigureCanvasAgg(fig)
         fig.set_gid("torusplot-composition")
@@ -87,7 +86,7 @@ def render_composition(
             prefix = f"panel-{letter or i + 1}-".replace("(", "").replace(")", "")
             sub = grid[panel.row : panel.row + panel.rowspan, panel.col : panel.col + panel.colspan]
             style = resolve_style(spec.style)
-            with mpl.rc_context(rc_params(style)):
+            with style_context(rc_params(style)):
                 ctx = render_panel(fig, sub, spec, tables, results, style=style, prefix=prefix)
             ctx._panel = panel
             ctx._letter = letter

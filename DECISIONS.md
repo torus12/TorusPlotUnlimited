@@ -169,3 +169,112 @@ Every decision made autonomously during the build is logged here:
   installed in the build sandbox, and the proxy blocks installing them).
 - **Reason:** Those checks are the properties vector editors need. Manual spot-check in
   Inkscape/Graphite is listed as a follow-up in FINAL_REPORT.md.
+
+## D-016 Dunnett's test uses TorusPlot's own deterministic integration (scipy is the cross-check)
+- **Decision:** `posthoc.dunnett` evaluates Dunnett's (1955) double integral with fixed
+  Gauss-Legendre quadrature; with a single treatment group it uses the exact t distribution.
+  `scipy.stats.dunnett` is used only as a cross-check in tests.
+- **Alternatives:** call `scipy.stats.dunnett` directly (the brief allows it).
+- **Reason:** scipy integrates by randomised quasi-Monte-Carlo, so its P values change in
+  the 3rd-4th significant digit from run to run (e.g. 0.00595 / 0.00580 / 0.00579 on the same
+  data). A statistics program must give the same answer every time. Our value agrees with an
+  independent adaptive quadrature to about 2e-9 and with scipy within its Monte-Carlo noise.
+
+## D-017 NIST reference files: download was blocked, so verified copies were used
+- **Decision:** The NIST StRD data files under `tests/fixtures/nist/` were not downloaded
+  from itl.nist.gov (the sandbox proxy refused the host). The ANOVA files are byte-for-byte
+  copies of NIST's files as redistributed inside the SciPy wheel's test data; see
+  `tests/fixtures/sources/` for per-file provenance, including how the nonlinear-regression
+  files and certified values were obtained.
+- **Alternatives:** hand-typing every dataset (error-prone for the 18,000-value sets).
+- **Reason:** NIST StRD data are works of the U.S. Government (not subject to copyright in
+  the United States) and are redistributed with attribution. Certified values are asserted
+  to documented tolerances; on the three "higher difficulty" ANOVA sets double precision
+  itself limits agreement to about 4 digits (same as scipy), and a second test proves the
+  algorithm is exact to 1e-13 once the constant offset is removed.
+
+## D-018 Mauchly's sphericity test reports the second-order chi-square approximation
+- **Decision:** Mauchly's P value uses the two-term expansion (Box 1949; Anderson 2003,
+  sec. 10.7); the first-order value is kept in `extra["sphericity"]["p_first_order"]`.
+- **Alternatives:** first-order chi-square approximation only.
+- **Reason:** It reproduces the published textbook value (P = .047 for the repeated-measures
+  worked example; the first-order formula gives .044) and is better calibrated in small
+  samples (5.6% vs 7.1% rejections at n = 5, k = 4 under sphericity in simulation).
+
+## D-019 Huynh-Feldt epsilon: original 1976 formula by default, Lecoutre's correction available
+- **Decision:** `eps_hf` is the original Huynh & Feldt (1976) estimator (what other major
+  packages print); the Lecoutre (1991) corrected value is reported in `extra` and selectable
+  with `hf_variant="lecoutre"`. The default headline P for 3+ levels is Greenhouse-Geisser.
+- **Alternatives:** Lecoutre by default.
+- **Reason:** Users compare output with other software; always-correct-with-GG is the safe
+  default because Mauchly's test has little power in small samples.
+
+## D-020 Own implementations where a library option was unsuitable (each cross-checked)
+- **Kaplan-Meier:** implemented in TorusPlot (lifelines lacks the linear CI option); lifelines
+  is the cross-check for estimates, log-log CIs, medians, log-rank and weighted tests.
+- **Fisher's exact test for r x c tables:** exact enumeration (up to 1,000,000 tables), because
+  scipy 1.17's r x c method is Monte Carlo and gives a different P on every call; beyond that
+  size a fixed-seed Monte Carlo is used with a warning.
+- **D'Agostino-Pearson K2:** computed in TorusPlot because `scipy.stats.skewtest` returns a
+  wrong z for exactly symmetric samples; agrees with scipy to 1e-10 on generic data.
+- **Reason:** determinism and correctness; all are tested against the libraries they replace.
+
+## D-021 ROUT outlier method was implemented from the published description, not the paper text
+- **Decision:** ROUT (Motulsky & Brown 2006) follows the published algorithm as summarised in
+  the brief (Lorentzian robust fit; RSDR = 68.27th percentile of |residuals| x N/(N-K);
+  FDR-style test on the largest 30% of residuals with alpha_i = Q(N-(i-1))/N, t distribution
+  with N-K df). The PMC page could not be opened from the sandbox (host blocked).
+- **Verification done:** simulations reproduce the behaviour the paper reports (with Q = 1%,
+  about 1-2% of clean Gaussian datasets have any flagged point; planted gross outliers are
+  found in > 95% of datasets; the robust fit is barely moved by the outlier).
+- **Open item:** an equation-by-equation read against the paper (merit-function scale and
+  percentile interpolation) is listed in FINAL_REPORT.md as a follow-up.
+
+## D-022 Classic published datasets are typed in and cited to their primary source
+- **Decision:** Worked-example tests use small classic datasets cited to the original paper
+  or book (e.g. Student 1908; Dobson 1983; Hollander & Wolfe 1973; Montgomery; Freireich
+  1963; Treloar 1974; Crampton 1947). Each was typed in and kept only if TorusPlot reproduces
+  the published results to printed precision. Sources are in `tests/fixtures/SOURCES.md`.
+- **Alternatives:** only synthetic data (weaker validation).
+- **Reason:** the brief asks for published worked examples. The numbers are facts from the
+  primary literature; no file was copied from a copyleft or unlicensed repository. Several
+  of these datasets are also redistributed with other statistics software; that is noted in
+  the sources file so any of them can be dropped if the owner prefers.
+
+## D-023 Anthropic provider uses the official `anthropic` SDK as an optional extra
+- **Decision:** The optional Anthropic backend imports the official `anthropic` Python SDK
+  lazily (MIT license; `pip install anthropic`). It is **not** in `requirements.txt`; without
+  it the provider reports itself unavailable. Ollama, OpenAI and Gemini backends use only the
+  Python standard library (`urllib`).
+- **Alternatives:** raw HTTP for Anthropic too.
+- **Reason:** Anthropic's guidance is to use the official SDK from Python; keeping it optional
+  respects the brief's fixed runtime dependency list. Requests enable server-side refusal
+  fallbacks by default (falling back to a plain request on SDKs that lack the parameter).
+
+## D-024 Figures ignore machine-level matplotlib settings; goldens regenerated
+- **Decision:** All rendering and exporting happens inside `style_context`, which starts
+  from matplotlib's built-in defaults (`rcdefaults`) and applies only the TorusPlot style.
+  Bundled fonts take priority over system fonts of the same family.
+- **What happened:** The first CI run failed 21 golden-image tests on *both* Linux and
+  Windows with identical numbers. Cause: the build sandbox has a system-wide
+  `/etc/matplotlibrc` that disables text hinting and an older system copy of Inter, so the
+  first goldens captured that machine's look. After the fix, local renders reproduce the CI
+  differences digit-for-digit.
+- **Golden regeneration:** 2026-11-13, logged in `tests/golden/REGENERATION_LOG.md`.
+- **Reason:** A FigureSpec must render identically on every computer.
+
+## D-025 pandas pinned below 3; lifelines pinned to >= 0.30.3
+- **Decision:** `pandas>=2.2,<3`, `lifelines>=0.30.3,<0.31`.
+- **Alternatives:** allow pandas 3.
+- **Reason:** The newest lifelines requires `pandas<3`, so `pip` installs pandas 2.3 for
+  users. Pinning makes the developer environment, CI and users agree on one combination.
+
+## D-026 Test-recommendation policy
+- **Decision:** `recommend_test` follows the conventional decision path (design -> normality
+  -> equal variance) and always lists the assumption-free alternative. Normality for 3+
+  groups is judged on residuals standardised within each group, so unequal spreads are not
+  mistaken for non-normality. Small-sample caveats are stated explicitly (e.g. a two-sided
+  Mann-Whitney test cannot reach P < 0.05 with n = 3 vs 3).
+- **Alternatives:** always recommend Welch-type tests without pre-tests.
+- **Reason:** Matches what journals and reviewers expect while being honest about the limits
+  of pre-testing with small n.

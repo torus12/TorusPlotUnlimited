@@ -1,0 +1,6 @@
+# Keep Windows batch files with CRLF line endings on every platform.
+*.bat text eol=crlf
+*.sh text eol=lf
+*.png binary
+*.ttf binary
+*.tplot binary

@@ -15,10 +15,10 @@ from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree
 
-import matplotlib as mpl
 from matplotlib.figure import Figure
 
 from .. import __version__
+from ..plot.styles import style_context
 
 FORMATS = ("svg", "pdf", "tiff", "png")
 _CREATOR = f"TorusPlot {__version__}"
@@ -41,7 +41,7 @@ def figure_bytes(fig: Figure, fmt: str = "png", dpi: int = 300, transparent: boo
     if fmt not in FORMATS:
         raise ExportError(f"Unsupported export format '{fmt}'. Choose from {FORMATS}.")
     buf = io.BytesIO()
-    with mpl.rc_context(_rc(fig)):
+    with style_context(_rc(fig)):
         if fmt == "svg":
             fig.savefig(buf, format="svg", transparent=transparent, metadata={"Date": None, "Creator": _CREATOR})
         elif fmt == "pdf":
