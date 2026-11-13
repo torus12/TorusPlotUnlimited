@@ -41,6 +41,7 @@ from scipy import stats
 from . import effect_sizes as es
 from . import multiplicity
 from ._utils import StatsError, check_alpha, ci_phrase, fmt, is_constant, p_phrase, sig_phrase
+from .factorial import _UNITS_WARNING, _no_paired_variation, _to_units, _unit_scale
 from .registry import ParamSpec, register
 from .result import AssumptionCheck, Comparison, EffectSize, Parameter, StatResult
 
@@ -135,13 +136,15 @@ def _replicate_table(long: pd.DataFrame) -> pd.DataFrame:
     rows = []
     for (g, r), sub in long.groupby(["group", "replicate"], sort=False):
         v = sub["value"].to_numpy(dtype=float)
+        unit = _unit_scale(v)  # SD computed on rescaled values (exact) so squares cannot overflow
+        sd = _to_units(float((v / unit).std(ddof=1)), unit) if v.size > 1 else None
         rows.append({
             "group": g,
             "replicate": r,
             "mean": float(v.mean()),
             "median": float(np.median(v)),
             "n_technical": int(v.size),
-            "sd_technical": float(v.std(ddof=1)) if v.size > 1 else math.nan,
+            "sd_technical": math.nan if sd is None else sd,
         })
     table = pd.DataFrame(rows)
     order = {g: i for i, g in enumerate(dict.fromkeys(long["group"]))}
@@ -229,20 +232,22 @@ def _unpaired_t(a: np.ndarray, b: np.ndarray, equal_var: bool, level: float) -> 
 def _paired_t(a: np.ndarray, b: np.ndarray, level: float) -> dict[str, Any]:
     d = a - b
     n = d.size
-    sd = 0.0 if is_constant(d) else float(d.std(ddof=1))
+    sd = 0.0 if _no_paired_variation(a, b) else float(d.std(ddof=1))
     return _t_summary(float(d.mean()), sd / math.sqrt(n), float(n - 1), level)
 
 
-def _shapiro(values: np.ndarray, target: str, what: str) -> AssumptionCheck:
+def _shapiro(values: np.ndarray, target: str, what: str, constant: bool | None = None) -> AssumptionCheck:
+    """Shapiro-Wilk check. ``constant`` lets the caller say that the values do not vary
+    (e.g. paired differences that are identical up to the rounding of the two columns)."""
     name = "Normality (Shapiro-Wilk)"
     n = values.size
     if n < 3:
         return AssumptionCheck(name=name, target=target, status="warn",
                                detail=f"Cannot be checked with {n} {what} (at least 3 are needed).")
-    if is_constant(values):
+    if is_constant(values) if constant is None else constant:
         return AssumptionCheck(name=name, target=target, status="warn",
                                detail=f"Cannot be checked: all {what} are identical.")
-    res = _quiet(stats.shapiro, values)
+    res = _quiet(stats.shapiro, values / _unit_scale(values))  # exact rescaling: W and P are unit-free
     w, p = float(res.statistic), float(res.pvalue)
     weak = " With so few replicates this check has little power." if n < 8 else ""
     if p < 0.05:
@@ -303,7 +308,9 @@ def _blocked_anova(matrix: np.ndarray) -> dict[str, Any]:
     ss_blocks = float(k * ((matrix.mean(axis=1) - grand) ** 2).sum())
     resid = matrix - matrix.mean(axis=0, keepdims=True) - matrix.mean(axis=1, keepdims=True) + grand
     ss_error = float((resid ** 2).sum())
-    scale = max(ss_total, float(np.abs(matrix).max()) ** 2, 1e-300)
+    # relative to the data's own size (the matrix is rescaled to order 1 by the caller, so
+    # nothing here can underflow): residual variation at the level of rounding is zero
+    scale = max(ss_total, float(np.abs(matrix).max()) ** 2)
     if ss_error <= 1e-22 * scale * matrix.size:
         ss_error = 0.0
     df1, df_blocks, df2 = k - 1, b - 1, (k - 1) * (b - 1)
@@ -428,7 +435,8 @@ def nested_analysis(
 
     1. Technical replicates are summarised (``summary``: mean or median) within each
        biological replicate of each group.
-    2. The test runs on those replicate summaries, so n = number of biological replicates:
+    2. The test runs on those replicate summaries, so n = number of biological replicates
+       that enter the test (matched replicates only, in a paired analysis):
 
        * two groups: Welch's t test (default for unmatched replicates), Student's t test
          (``test="t"``) or a paired t test when replicates are matched;
@@ -459,6 +467,14 @@ def nested_analysis(
         raise StatsError("paired must be True, False or None (automatic).")
 
     long, notes = _prepare(df, value, group, replicate)
+    # Every test statistic here is unit-free: work on values divided by a power of two close
+    # to the largest magnitude (exact) and convert means / differences / sums of squares back.
+    unit = _unit_scale(long["value"].to_numpy(dtype=float))
+    long = long.assign(value=long["value"].to_numpy(dtype=float) / unit)
+
+    def back(v: Any, power: int = 1) -> float | None:
+        return _to_units(_none_if_nan(v), unit, power)
+
     table = _replicate_table(long)
     table["value"] = table[summary]
     groups = list(dict.fromkeys(table["group"]))
@@ -530,22 +546,22 @@ def nested_analysis(
         crit = float(stats.t.ppf(0.5 + level / 2.0, a.size - 1)) if a.size > 1 else math.nan
         tech = [int(v) for v in by_group[g]["n_technical"]]
         descriptives.append({
-            "group": g, "n": n_used[g], "mean": float(a.mean()), "sd": _none_if_nan(sd),
-            "sem": _none_if_nan(sem), "median": float(np.median(a)), "min": float(a.min()),
-            "max": float(a.max()), "ci_low": _none_if_nan(a.mean() - crit * sem),
-            "ci_high": _none_if_nan(a.mean() + crit * sem),
+            "group": g, "n": n_used[g], "mean": back(a.mean()), "sd": back(sd),
+            "sem": back(sem), "median": back(np.median(a)), "min": back(a.min()),
+            "max": back(a.max()), "ci_low": back(a.mean() - crit * sem),
+            "ci_high": back(a.mean() + crit * sem),
             "n_biological": n_bio[g], "n_technical_total": int(sum(tech)),
             "n_technical_per_replicate": tech,
         })
         parameters.append(Parameter(
-            name=f"Mean of replicate {summary}s: {g}", value=float(a.mean()), se=_none_if_nan(sem),
-            ci_low=_none_if_nan(a.mean() - crit * sem), ci_high=_none_if_nan(a.mean() + crit * sem),
+            name=f"Mean of replicate {summary}s: {g}", value=back(a.mean()), se=back(sem),
+            ci_low=back(a.mean() - crit * sem), ci_high=back(a.mean() + crit * sem),
             ci_level=level, unit_note=f"n = {n_used[g]} biological replicates.",
         ))
     rep_rows = [
-        {"group": row["group"], "replicate": row["replicate"], "mean": float(row["mean"]),
-         "median": float(row["median"]), "value": float(row["value"]),
-         "n_technical": int(row["n_technical"]), "sd_technical": _none_if_nan(row["sd_technical"])}
+        {"group": row["group"], "replicate": row["replicate"], "mean": back(row["mean"]),
+         "median": back(row["median"]), "value": back(row["value"]),
+         "n_technical": int(row["n_technical"]), "sd_technical": back(row["sd_technical"])}
         for row in table.to_dict("records")
     ]
     extra: dict[str, Any] = {
@@ -558,13 +574,15 @@ def nested_analysis(
 
     n_tech_total = int(len(long))
     n_bio_total = int(sum(n_bio.values()))
+    n_used_total = int(sum(n_used.values()))  # replicate summaries that actually enter the test
     tech_min = int(table["n_technical"].min())
     tech_max = int(table["n_technical"].max())
     per_rep = f"{tech_min}" if tech_min == tech_max else f"{tech_min} to {tech_max}"
     notes.append(
         f"{n_tech_total} measurements (technical replicates) were reduced to {n_bio_total} biological "
-        f"replicate {summary}s ({per_rep} measurement(s) per replicate); the test used the replicate "
-        f"{summary}s."
+        f"replicate {summary}s ({per_rep} measurement(s) per replicate); the test used "
+        + ("the replicate " + f"{summary}s." if n_used_total == n_bio_total else
+           f"{n_used_total} of them (the matched replicates that occur in every group).")
     )
     if tech_max == 1:
         notes.append("Every biological replicate has a single measurement, so there was nothing to average.")
@@ -582,7 +600,8 @@ def nested_analysis(
             name="Independent biological replicates", status="info",
             detail="Each biological replicate (experiment, animal) must be independent of the others. "
                    "Technical replicates inside one biological replicate are not independent, which is "
-                   "why they were averaged first.",
+                   "why they were " + ("averaged" if summary == "mean" else "reduced to their median")
+                   + " first.",
         ),
     ]
     effect_sizes: list[EffectSize] = []
@@ -630,7 +649,8 @@ def nested_analysis(
         a, b = arrays[ga], arrays[gb]
         if test == "paired_t":
             res = _paired_t(a, b, level)
-            assumptions.append(_shapiro(a - b, f"{ga} - {gb}", "paired differences"))
+            assumptions.append(_shapiro(a - b, f"{ga} - {gb}", "paired differences",
+                                        constant=_no_paired_variation(a, b)))
             effect_sizes = [_effect(es.cohen_d_paired, a, b, level), _effect(es.cohen_d_paired, a, b, level, True)]
             citations.append(CITATIONS["student"])
             test_why = "A paired t test compares the mean of the within-replicate differences with zero."
@@ -655,13 +675,13 @@ def nested_analysis(
         statistic, df1, p_value = res["statistic"], res["df"], res["p_value"]
         degenerate = statistic is None
         parameters.insert(0, Parameter(
-            name=f"Mean difference ({ga} - {gb})", value=res["estimate"], se=res["se"],
-            ci_low=res["ci_low"], ci_high=res["ci_high"], ci_level=level, statistic=statistic,
+            name=f"Mean difference ({ga} - {gb})", value=back(res["estimate"]), se=back(res["se"]),
+            ci_low=back(res["ci_low"]), ci_high=back(res["ci_high"]), ci_level=level, statistic=statistic,
             p_value=p_value, unit_note=f"Difference between the means of the replicate {summary}s.",
         ))
         if not degenerate:
-            mean_diff_text = (f" The mean difference ({ga} - {gb}) was {fmt(res['estimate'])} "
-                              f"({ci_phrase(res['ci_low'], res['ci_high'], level)}).")
+            mean_diff_text = (f" The mean difference ({ga} - {gb}) was {fmt(back(res['estimate']))} "
+                              f"({ci_phrase(back(res['ci_low']), back(res['ci_high']), level)}).")
     else:
         statistic_name = "F"
         citations.append(CITATIONS["fisher"])
@@ -731,8 +751,9 @@ def nested_analysis(
             [math.nan if r[2]["p_value"] is None else r[2]["p_value"] for r in rows], "holm")
         for (ga, gb, pr, effect), p_adj in zip(rows, adjusted):
             comparisons.append(Comparison(
-                id="", group_a=ga, group_b=gb, estimate=pr["estimate"], se=pr["se"], ci_low=pr["ci_low"],
-                ci_high=pr["ci_high"], statistic_name="t", statistic=pr["statistic"], df=pr["df"],
+                id="", group_a=ga, group_b=gb, estimate=back(pr["estimate"]), se=back(pr["se"]),
+                ci_low=back(pr["ci_low"]), ci_high=back(pr["ci_high"]),
+                statistic_name="t", statistic=pr["statistic"], df=pr["df"],
                 p_value=pr["p_value"], p_adjusted=_none_if_nan(p_adj), effect_size=effect,
             ))
         pair_name = "paired t tests" if want_paired else "Welch's t tests"
@@ -743,6 +764,14 @@ def nested_analysis(
         if not want_paired:
             citations.append(CITATIONS["welch"])
 
+    lost_units = False
+    for row in anova_table:  # sums of squares / mean squares back to the units of the data
+        for key in ("ss", "ms"):
+            if row.get(key) is not None:
+                row[key] = back(row[key], 2)
+                lost_units = lost_units or row[key] is None
+    if lost_units:
+        warnings.append(_UNITS_WARNING)
     for comp in comparisons:
         if comp.statistic is None and comp.effect_size is not None:
             comp.effect_size = EffectSize(name=comp.effect_size.name, value=None, ci_level=level,
@@ -784,7 +813,7 @@ def nested_analysis(
     # ---------------------------------------------------------------------- text
     test_name = _TEST_NAMES[test]
     group_text = ", ".join(f"{g} (n = {n_used[g]})" for g in groups)
-    means_text = ", ".join(f"{g}: {fmt(float(arrays[g].mean()))}" for g in groups)
+    means_text = ", ".join(f"{g}: {fmt(back(arrays[g].mean()))}" for g in groups)
     if degenerate:
         result_text = "The comparison could not be evaluated (no variability among the replicates)."
     elif k == 2:
@@ -808,8 +837,9 @@ def nested_analysis(
             pair_text = f" After Holm adjustment these pairs differed: {listed}."
         else:
             pair_text = " After Holm adjustment no pair of groups differed significantly."
+    reduced = ("averaged" if summary == "mean" else "summarised by their median")
     interpretation = (
-        f"Technical replicates were averaged within each biological replicate, and the {n_bio_total} "
+        f"Technical replicates were {reduced} within each biological replicate, and the {n_used_total} "
         f"biological replicate {summary}s were compared between {group_text} with "
         f"{_TEST_PHRASES[test]}. "
         f"{result_text} Group means of the replicate {summary}s: {means_text}.{mean_diff_text}"

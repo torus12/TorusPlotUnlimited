@@ -233,8 +233,12 @@ def _km(t: np.ndarray, e: np.ndarray, ci_level: float, ci_method: str) -> dict[s
     # ---- median (first time S(t) <= 0.5) with the Brookmeyer-Crowley interval
     notes: list[str] = []
     half = 0.5 + _TOL
+    # Once the curve has reached 0 the lower band is 0 (it cannot lie above the estimate), but
+    # the upper band is *undefined* there (Greenwood's variance is infinite), not 0: the upper
+    # limit of the median is the first time the upper band itself drops to 50% (Brookmeyer &
+    # Crowley 1982) and is "not reached" when that never happens while the band exists.
     band_lo = np.where(at_zero, 0.0, lo)
-    band_hi = np.where(at_zero, 0.0, hi)
+    band_hi = np.where(at_zero, np.inf, hi)
 
     def first_at_or_below(curve: np.ndarray) -> float | None:
         idx = np.flatnonzero(curve <= half)
@@ -262,7 +266,9 @@ def _km(t: np.ndarray, e: np.ndarray, ci_level: float, ci_method: str) -> dict[s
         if median_hi is None:
             median_note = (
                 f"The upper {ci_level * 100:g}% confidence limit of the median was not reached "
-                "(the upper confidence band never drops to 50%)."
+                "(the upper confidence band never drops to 50%"
+                + (" before the curve reaches 0, where the band is undefined; there are too few "
+                   "subjects to bound the median from above)." if bool(at_zero.any()) else ").")
             )
 
     curve = {
@@ -307,7 +313,10 @@ def kaplan_meier(
 
     Median survival is the first time the curve is at or below 50%; its confidence
     interval (Brookmeyer & Crowley 1982) runs from the first time the lower band is at
-    or below 50% to the first time the upper band is. ``None`` means "not reached".
+    or below 50% to the first time the upper band is. ``None`` means "not reached". Where
+    the curve has reached 0 the upper band is undefined (not 0), so with very few subjects
+    (for example one subject, or three uncensored subjects at 95% confidence) the upper
+    limit is "not reached": the data cannot bound the median from above.
 
     Returns a dict with ``n, events, censored, table`` (one row per distinct time:
     ``time, at_risk, events, censored, survival, se, ci_low, ci_high``), ``curve``
@@ -598,6 +607,20 @@ def _curves_cross(km_a: dict[str, Any], km_b: dict[str, Any]) -> tuple[bool, flo
     return bool(up > 1e-9 and down > 1e-9), up, down
 
 
+def _trend_order(names: list[str], explicit: bool) -> tuple[list[str], str]:
+    """Order of the groups for the trend test and how it was decided."""
+    if explicit:
+        return list(names), "the order you gave"
+    try:
+        values = [float(g) for g in names]
+    except ValueError:
+        return list(names), "the order in which the groups first appear in the data"
+    if all(math.isfinite(v) for v in values) and len(set(values)) == len(values):
+        ranked = [g for _, g in sorted(zip(values, names), key=lambda pair: pair[0])]
+        return ranked, "ascending numeric order of the group labels"
+    return list(names), "the order in which the groups first appear in the data"
+
+
 def _adjust_label(adjust: str) -> str:
     """Validate a multiplicity method name and return its display label."""
     try:
@@ -633,8 +656,13 @@ def survival_analysis(
     events more) or ``"both"`` (log-rank is the headline result). With exactly two
     groups the hazard ratio (first group relative to the second) is reported; with three
     or more, every pair is compared and the P values adjusted with ``adjust``.
-    ``trend=True`` adds the log-rank test for trend (three or more groups, in the order
-    given or in ``group_order``; always computed with log-rank weights) in ``extra["trend"]``.
+    ``trend=True`` adds the log-rank test for trend (Tarone 1975; three or more *ordered*
+    groups such as increasing doses; always computed with log-rank weights and equally
+    spaced scores 1, 2, ..., k) in ``extra["trend"]``, and reports it in the interpretation
+    and methods text. The groups are taken in ``group_order`` when given; otherwise in
+    ascending numeric order when every group label is a number (doses), else in the order
+    in which they first appear in the data. With two groups the trend test is identical to
+    the log-rank test and is not reported separately.
     """
     alpha = check_alpha(alpha)
     ci_level, ci_method = _check_ci(ci_level, ci_method)
@@ -775,7 +803,24 @@ def survival_analysis(
             tests[key] = _logrank(names, pairs, key)
             warnings.extend(tests[key]["notes"])
         if trend and k >= 3:
-            extra["trend"] = _logrank(names, pairs, "logrank", trend=True)["trend"]
+            order, how = _trend_order(names, explicit=group_order is not None)
+            tr = _logrank(order, [data[g] for g in order], "logrank", trend=True)["trend"]
+            extra["trend"] = {"test_name": "Log-rank test for trend", **tr, "group_order": order,
+                              "order_basis": how}
+            assumptions.append(AssumptionCheck(
+                name="Ordered groups (trend test)", status="info",
+                detail=f"The trend test treats the groups as ordered: {' < '.join(order)} ({how}), with "
+                       "equally spaced scores 1, 2, 3, ... It asks whether survival gets steadily better or "
+                       "worse along that order; it is meaningless if the order is arbitrary.",
+            ))
+            if tr["statistic"] is None:
+                warnings.append("The log-rank test for trend could not be computed (no usable variation "
+                                "in the event pattern across the ordered groups).")
+    if trend and k < 3:
+        notes.append(
+            "The test for trend needs three or more ordered groups; with two groups it is identical to "
+            "the log-rank test, so it was not reported separately."
+        )
     primary = tests.get(primary_key)
     extra["tests"] = {
         key: {f: res[f] for f in ("test_name", "statistic", "df", "p_value", "observed", "expected")}
@@ -914,8 +959,8 @@ def survival_analysis(
     trend_text = ""
     if extra.get("trend", {}).get("statistic") is not None:
         tr = extra["trend"]
-        trend_text = (f" The log-rank test for trend across the groups in the order given was "
-                      f"{sig_phrase(tr['p_value'], alpha)} (chi-square = {fmt(tr['statistic'])}, df = 1).")
+        trend_text = (f" The log-rank test for trend across the ordered groups ({' < '.join(tr['group_order'])}) "
+                      f"was {sig_phrase(tr['p_value'], alpha)} (chi-square = {fmt(tr['statistic'])}, df = 1).")
         citations_trend = [CITATIONS["tarone"]]
     else:
         citations_trend = []
@@ -951,6 +996,9 @@ def survival_analysis(
         + (" and the Gehan-Breslow-Wilcoxon test" if test == "both" else "")
         + f" (alpha = {alpha:g})."
     )
+    if extra.get("trend", {}).get("statistic") is not None:
+        methods += (" A log-rank test for trend (Tarone 1975) was computed across the ordered groups "
+                    f"({' < '.join(extra['trend']['group_order'])}; equally spaced scores).")
     if k == 2:
         methods += (" The hazard ratio and its confidence interval were computed by the "
                     "Mantel-Haenszel and log-rank (O/E) methods.")
@@ -1081,6 +1129,13 @@ def _pick_survival_columns(
                   help="With three or more groups every pair is compared; this controls how the P "
                        "values are corrected for making several comparisons. Bonferroni is the "
                        "simple, conservative choice."),
+        ParamSpec("trend", "Also test for a trend across ordered groups", kind="bool", default=False,
+                  help="Tick this only when the groups have a natural ORDER, such as increasing doses "
+                       "(0, 10, 100 mg) or disease stages, and there are three or more of them. It adds "
+                       "the log-rank test for trend, which asks whether survival gets steadily better or "
+                       "worse from the first group to the last. Numeric group labels are ordered by their "
+                       "value; other labels are taken in the order they first appear in the table, so "
+                       "sort the table first if that is not the order you mean."),
     ),
     description="Draws Kaplan-Meier survival curves and tests whether survival differs between groups, "
                 "correctly handling subjects who were still event-free when last seen (censored).",
@@ -1095,6 +1150,7 @@ def _run_survival(
     alpha: float = 0.05,
     ci_method: str = "log-log",
     adjust: str = "bonferroni",
+    trend: bool = False,
     **_: Any,
 ) -> StatResult:
     time, event, group, notes = _pick_survival_columns(table, time, event, group)
@@ -1103,7 +1159,7 @@ def _run_survival(
         df[time].tolist(),
         df[event].tolist(),
         None if group is None else df[group].tolist(),
-        alpha=alpha, test=test, ci_method=ci_method, adjust=adjust,
+        alpha=alpha, test=test, ci_method=ci_method, adjust=adjust, trend=bool(trend),
     )
     result.data_notes = notes + result.data_notes
     result.extra["columns"] = {"time": time, "event": event, "group": group}

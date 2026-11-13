@@ -36,9 +36,12 @@ from ._utils import (
     p_phrase,
     sig_phrase,
 )
+from ._utils import is_constant as _ulp_constant
 from .effect_sizes import magnitude_r
+from .factorial import _unit_scale
 from .multiplicity import METHOD_LABELS, adjust_pvalues
 from .registry import ParamSpec, register
+from .regression import centre
 from .result import AssumptionCheck, EffectSize, Parameter, StatResult
 
 __all__ = ["correlation_matrix", "pearson", "spearman"]
@@ -54,16 +57,18 @@ _CITE_BW = "Bonett DG, Wright TA (2000) Psychometrika 65:23-28"
 
 # ----------------------------------------------------------------------- helpers
 def is_constant(arr: np.ndarray) -> bool:
-    """True when all values are identical up to floating-point noise.
+    """True when all values are identical up to floating-point rounding.
 
-    Purely *relative* (unlike ``_utils.is_constant``, which has an absolute floor of 1e-12
-    and would call concentrations expressed in molar, e.g. 1e-15 to 1e-13, constant).
+    This is the shared ulp-based test (``_utils.is_constant``: the spread is at most a few
+    units in the last place of the largest magnitude), applied after dividing the values by
+    a power of two close to their largest magnitude (exact), so the answer depends neither
+    on the unit of measurement nor on a large common offset: 1e15 + (1, 2, ..., 6) and
+    1e-15, 3e-15 both vary; 0.1 + 0.2 and 0.3 do not.
     """
     arr = np.asarray(arr, dtype=float)
     if arr.size < 2:
         return True
-    spread = float(np.ptp(arr))
-    return spread == 0.0 or spread <= 1e-13 * float(np.max(np.abs(arr)))
+    return _ulp_constant(arr / _unit_scale(arr))
 
 
 def _check_level(ci_level: float) -> float:
@@ -73,9 +78,13 @@ def _check_level(ci_level: float) -> float:
 
 
 def _r_value(x: np.ndarray, y: np.ndarray) -> float:
-    """Product-moment correlation from centred sums (clipped to [-1, 1])."""
-    dx = x - x.mean()
-    dy = y - y.mean()
+    """Product-moment correlation from centred sums (clipped to [-1, 1]).
+
+    The data are centred in two passes (see ``regression.centre``) so that a large common
+    offset (e.g. X = 1e15 + 1, 1e15 + 2, ...) does not spoil the centring.
+    """
+    dx = centre(x)[1]
+    dy = centre(y)[1]
     # scale before squaring so very large / very small data do not overflow
     sx = float(np.max(np.abs(dx)))
     sy = float(np.max(np.abs(dy)))
@@ -139,7 +148,7 @@ def _shapiro(values: np.ndarray, target: str) -> AssumptionCheck:
                                       "departures. Inspect a QQ plot instead.")
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        w, p = stats.shapiro(values)
+        w, p = stats.shapiro(values / _unit_scale(values))  # exact rescaling: W and P are unit-free
     if not math.isfinite(p):
         return AssumptionCheck(name=name, target=target, status="warn",
                                detail="The normality test could not be computed for these values.")

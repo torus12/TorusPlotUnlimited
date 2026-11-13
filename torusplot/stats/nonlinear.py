@@ -62,6 +62,7 @@ from scipy.special import expit
 from ..data.tables import TableError
 from ._utils import StatsError, check_alpha, ci_phrase, fmt, p_phrase, sig_phrase
 from .equation import Equation, parse_equation
+from .factorial import _unit_scale
 from .registry import ParamSpec, register
 from .regression import (
     CI_LEVEL_PARAM,
@@ -111,6 +112,8 @@ N_RESTARTS = 6
 OFFSET_TOL = 1e-4
 #: Weighted SS below this fraction of sum(w y^2) is treated as a numerically perfect fit.
 NEAR_PERFECT_RATIO = 1e-20
+#: AICc differences smaller than this are rounding noise: the two fits are the same.
+AICC_TIE = 1e-6
 
 _CITE_BW = "Bates DM, Watts DG (1988) Nonlinear Regression Analysis and Its Applications, Wiley"
 _CITE_OFFSET = "Bates DM, Watts DG (1981) Technometrics 23:179-183"
@@ -163,6 +166,8 @@ class CurveModel:
     x_transform: Callable[[np.ndarray], np.ndarray] | None = None
     #: Key of a model this one is a constrained special case of, with the constrained names.
     nested_in: tuple[str, ...] = ()
+    #: Remarks shown with every fit of this model (how a typed equation was read).
+    notes: tuple[str, ...] = ()
 
     @property
     def n_parameters(self) -> int:
@@ -746,8 +751,11 @@ def _user_model(equation: str | Equation) -> CurveModel:
 
     return CurveModel(
         key="user_defined", label="User-defined equation", equation=eq.text, parameters=names,
-        descriptions=dict.fromkeys(names, "Parameter of your equation."),
+        descriptions={name: ("Parameter of your equation (fitted; a lone 'e' is not Euler's number: "
+                             "write exp(1) for that)." if name == "e" else "Parameter of your equation.")
+                      for name in names},
         func=func, jac=jac, guess=guess, summary="An equation you typed.", family="user",
+        notes=tuple(eq.notes),
     )
 
 
@@ -905,6 +913,10 @@ class _Problem:
     upper: np.ndarray
     n: int
     ss_scale: float                                # sum(w y^2), for perfect-fit detection
+    #: Power of two close to the size of the weighted data. The optimiser works on
+    #: residuals divided by it (exact), so that its stopping rules (some of which are
+    #: absolute thresholds on the gradient) do not depend on the unit of Y.
+    unit: float = 1.0
 
     @property
     def bounded(self) -> bool:
@@ -912,9 +924,11 @@ class _Problem:
 
 
 def _safe_residual(problem: _Problem) -> Callable[[np.ndarray], np.ndarray]:
+    """Residuals for the optimiser: in units of ``problem.unit`` (data of order 1), with a
+    large finite penalty where the model is undefined."""
     def fun(theta: np.ndarray) -> np.ndarray:
         with np.errstate(all="ignore"):
-            r = problem.residual(theta)
+            r = problem.residual(theta) / problem.unit
         return np.where(np.isfinite(r), r, 1e150)
     return fun
 
@@ -922,14 +936,21 @@ def _safe_residual(problem: _Problem) -> Callable[[np.ndarray], np.ndarray]:
 def _safe_jacobian(problem: _Problem) -> Callable[[np.ndarray], np.ndarray]:
     def jac(theta: np.ndarray) -> np.ndarray:
         with np.errstate(all="ignore"):
-            j = problem.jacobian(theta)
+            j = problem.jacobian(theta) / problem.unit
         return np.where(np.isfinite(j), j, 0.0)
     return jac
 
 
 def _active_mask(theta: np.ndarray, lower: np.ndarray, upper: np.ndarray) -> np.ndarray:
-    scale = np.maximum(1.0, np.abs(theta))
-    return (theta - lower <= 1e-9 * scale) | (upper - theta <= 1e-9 * scale)
+    """Which parameters sit on a bound. "On the bound" is judged relative to the size of
+    the parameter and of the bound (never against an absolute distance), so a Km of 1e-9
+    with a lower bound of 0 is not mistaken for a parameter stuck at 0."""
+    with np.errstate(invalid="ignore"):
+        tol_lo = 1e-9 * np.maximum(np.abs(theta), np.where(np.isfinite(lower), np.abs(lower), 0.0))
+        tol_hi = 1e-9 * np.maximum(np.abs(theta), np.where(np.isfinite(upper), np.abs(upper), 0.0))
+        at_lower = np.isfinite(lower) & (theta - lower <= tol_lo)
+        at_upper = np.isfinite(upper) & (upper - theta <= tol_hi)
+    return at_lower | at_upper
 
 
 def _tangent_basis(j: np.ndarray) -> np.ndarray:
@@ -1093,17 +1114,28 @@ def _better(a: _Candidate | None, b: _Candidate | None) -> _Candidate | None:
     return a if ra[1] <= rb[1] else b
 
 
+def _typical_size(values: np.ndarray) -> np.ndarray:
+    """Magnitude of each starting value; a value of exactly 0 borrows the median magnitude of
+    the others (1 if all are 0). Used instead of absolute floors such as 1e-3, which are
+    huge for parameters expressed in small units (a Kd in mol/L) and negligible for large ones."""
+    size = np.abs(np.asarray(values, dtype=float))
+    nonzero = size[size > 0]
+    fallback = float(np.median(nonzero)) if nonzero.size else 1.0
+    return np.where(size > 0, size, fallback)
+
+
 def _clip_start(start: np.ndarray, lower: np.ndarray, upper: np.ndarray) -> np.ndarray:
     out = start.astype(float).copy()
+    size = _typical_size(out)
     for i in range(out.size):
         lo, hi = lower[i], upper[i]
         if math.isfinite(lo) and math.isfinite(hi):
             margin = 1e-6 * (hi - lo)
             out[i] = min(max(out[i], lo + margin), hi - margin)
         elif math.isfinite(lo) and out[i] <= lo:
-            out[i] = lo + max(1e-6, 1e-6 * abs(lo))
+            out[i] = lo + 1e-6 * max(abs(lo), size[i])
         elif math.isfinite(hi) and out[i] >= hi:
-            out[i] = hi - max(1e-6, 1e-6 * abs(hi))
+            out[i] = hi - 1e-6 * max(abs(hi), size[i])
     return out
 
 
@@ -1121,7 +1153,7 @@ def _solve(problem: _Problem, start: np.ndarray, restarts: bool = True,
 
     if restarts and not satisfactory(best):
         rng = np.random.default_rng(271828)
-        scale = np.maximum(np.abs(start), 1e-3)
+        scale = _typical_size(start)
         for i in range(N_RESTARTS):
             used += 1
             if i % 2 == 0 or best is None:
@@ -1247,7 +1279,7 @@ def _make_problem(
         return sqrt_w[:, None] * model.jac(tx, full(theta))[:, idx]
 
     return _Problem(residual=residual, jacobian=jacobian, lower=lower[idx], upper=upper[idx],
-                    n=int(y.size), ss_scale=float(np.sum(w * y * y)))
+                    n=int(y.size), ss_scale=float(np.sum(w * y * y)), unit=_unit_scale(sqrt_w * y))
 
 
 def _run_fit(
@@ -1311,7 +1343,10 @@ def _profile_interval(fit: _Fit, name: str, level: float) -> tuple[float | None,
     free_other[j_full] = False
     se = fit.se().get(name)
     t_crit = float(stats.t.ppf(0.5 + level / 2.0, df))
-    step0 = se * t_crit if (se is not None and math.isfinite(se) and se > 0) else max(abs(best) * 0.1, 1e-3)
+    if se is not None and math.isfinite(se) and se > 0:
+        step0 = se * t_crit
+    else:  # no standard error: start from a tenth of the estimate (unit-free); 1e-3 only if it is 0
+        step0 = abs(best) * 0.1 if best != 0 else 1e-3
     huge = target * 1e6 + 1.0
 
     def profile_ss(value: float, warm: np.ndarray) -> tuple[float, np.ndarray]:
@@ -1352,7 +1387,10 @@ def _profile_interval(fit: _Fit, name: str, level: float) -> tuple[float | None,
                     return ss_i - target
 
                 try:
-                    found = float(optimize.brentq(objective, prev_v, v, xtol=1e-12 * max(1.0, abs(best)),
+                    # tolerance relative to the size of the parameter and of the search step
+                    # (an absolute 1e-12 is 0.1% of a Kd of 1e-9)
+                    found = float(optimize.brentq(objective, prev_v, v,
+                                                  xtol=1e-12 * max(abs(best), abs(step0)),
                                                   rtol=1e-10, maxiter=100))
                 except (ValueError, RuntimeError):
                     found = None
@@ -1479,6 +1517,14 @@ def _display_equation(text: str, kind: str) -> str:
     return text.replace("EC50", "IC50") if kind == "IC50" else text
 
 
+def _display_summary(text: str, kind: str) -> str:
+    """Model summary with the fitted quantity named IC50 when that label was asked for
+    (leaves 'stimulation (EC50) and inhibition (IC50)' style enumerations alone)."""
+    if kind != "IC50":
+        return text
+    return text.replace("log10(EC50)", "log10(IC50)").replace("keeps EC50", "keeps IC50")
+
+
 def _resolve_direction(model: CurveModel, direction: str, x: np.ndarray, y: np.ndarray,
                        fixed_user: dict[str, float]) -> tuple[dict[str, float], list[str]]:
     """Default fixed values of the model (resolves the sign of the 3-parameter Hill slope)."""
@@ -1533,6 +1579,7 @@ def _setup(
         )
     cm = get_model(model, equation)
     xa, ya, sda, notes = _prepare_xy(x, y, sd, names)
+    notes.extend(cm.notes)  # e.g. "'e' was fitted as a parameter, not read as Euler's number"
     warns: list[str] = []
     fixed_user = _resolve_values(cm, fixed, "Fixed values")
     fixed_default, dir_notes = _resolve_direction(cm, direction, xa, ya, fixed_user) if xa.size else ({}, [])
@@ -1650,7 +1697,7 @@ def _parameter_table(
             cis[name] = (None, None)
             continue
         lo = hi = None
-        note = model.descriptions.get(name, "")
+        note = _display_equation(model.descriptions.get(name, ""), kind)
         if se[name] is not None and t_crit is not None:
             if ci_method == "profile":
                 lo, hi, p_notes = _profile_interval(fit, name, ci_level)
@@ -2069,7 +2116,7 @@ def _build_result(
     result = StatResult(
         analysis="nonlinear_regression",
         test_name=f"Nonlinear regression: {model.label}",
-        why_chosen=(model.summary + " " if model.summary else "")
+        why_chosen=(_display_summary(model.summary, kind) + " " if model.summary else "")
                    + "Nonlinear regression finds the parameter values that bring the curve as "
                      "close as possible to the points (least squares).",
         assumptions=assumptions,
@@ -2106,7 +2153,8 @@ def _build_result(
             },
             "parameter_correlation": corr,
             "parameter_dependency": dependency,
-            "parameter_descriptions": {_display(k, kind): v for k, v in model.descriptions.items()},
+            "parameter_descriptions": {_display(k, kind): _display_equation(v, kind)
+                                       for k, v in model.descriptions.items()},
             "initial_values": {_display(k, kind): float(v) for k, v in fit.start.items()
                                if k not in fit.fixed},
             "fixed": {_display(k, kind): float(v) for k, v in fit.fixed.items()},
@@ -2300,6 +2348,13 @@ def compare_fits(
     3- vs 4-parameter dose-response, line vs quadratic, specific vs total binding). For
     user-defined equations nesting cannot be verified, so pass ``nested=True`` if you know
     the simpler equation is a special case of the other.
+
+    Wording: "simpler" / "more complex" are only used when the models have different numbers
+    of fitted parameters; otherwise they are called "first" and "second". When the AICc
+    values are equal (difference below 1e-6, e.g. two equations that are the same function)
+    neither model is preferred: the result says that the data do not distinguish them,
+    ``extra["preferred"]`` is ``"none"`` and the first model's curve is shown. An AICc
+    difference below 2 is reported as weak evidence (Burnham & Anderson 2002, sec. 2.6).
     """
     alpha = check_alpha(alpha)
     ci_level = check_level(ci_level)
@@ -2320,7 +2375,10 @@ def compare_fits(
         swapped = True
         warns.append("The model given as 'simple' has more fitted parameters than the 'complex' "
                      "one, so the two were swapped.")
-    for label, fit in (("simpler", fit_s), ("more complex", fit_c)):
+    # "simpler" / "more complex" only mean something when the parameter counts differ
+    same_size = fit_s.p == fit_c.p
+    word_s, word_c = ("first", "second") if same_size else ("simpler", "more complex")
+    for label, fit in ((word_s, fit_s), (word_c, fit_c)):
         if not fit.converged:
             warns.append(f"The fit of the {label} model did not converge; the comparison is "
                          "unreliable.")
@@ -2369,15 +2427,19 @@ def compare_fits(
         warns.append("AICc could not be computed for both models (too few points per "
                      "parameter, or an exact fit).")
 
+    # identical AICc (to rounding): the data do not distinguish the models at all
+    aicc_tie = akaike["delta_aicc"] is not None and abs(akaike["delta_aicc"]) < AICC_TIE
+    undecided = False
     if p_value is not None:
         prefer_complex = p_value < alpha
         basis = "F test"
     elif akaike["delta_aicc"] is not None:
-        prefer_complex = akaike["delta_aicc"] < 0
-        basis = "AICc"
+        prefer_complex = akaike["delta_aicc"] < 0 and not aicc_tie
+        undecided = aicc_tie
+        basis = "AICc (tie: neither model is preferred)" if aicc_tie else "AICc"
     else:
         prefer_complex = False
-        basis = "default (simpler model)"
+        basis = f"default ({word_s} model)"
     preferred, setup_p = (fit_c, setup_c) if prefer_complex else (fit_s, setup_s)
     label_s, label_c = fit_s.model.label, fit_c.model.label
     if fit_s.model.key == fit_c.model.key:
@@ -2386,15 +2448,15 @@ def compare_fits(
     grid, log_spaced = _curve_grid(preferred.model, preferred.x)
     effect_sizes = [
         EffectSize(name="R squared", value=gof_s["r_squared"], ci_level=ci_level,
-                   target=f"simpler model: {label_s}"),
+                   target=f"{word_s} model: {label_s}"),
         EffectSize(name="R squared", value=gof_c["r_squared"], ci_level=ci_level,
-                   target=f"more complex model: {label_c}"),
+                   target=f"{word_c} model: {label_c}"),
     ]
     comparison_rows = [
-        {"model": "simpler", "label": label_s, "n_parameters": fit_s.p, "df": fit_s.df,
+        {"model": word_s, "label": label_s, "n_parameters": fit_s.p, "df": fit_s.df,
          "ss": fit_s.ss, "r_squared": gof_s["r_squared"], "sy_x": gof_s["sy_x"],
          "aicc": gof_s["aicc"], "akaike_weight": akaike["probability_simple"]},
-        {"model": "more complex", "label": label_c, "n_parameters": fit_c.p, "df": fit_c.df,
+        {"model": word_c, "label": label_c, "n_parameters": fit_c.p, "df": fit_c.df,
          "ss": fit_c.ss, "r_squared": gof_c["r_squared"], "sy_x": gof_c["sy_x"],
          "aicc": gof_c["aicc"], "akaike_weight": akaike["probability_complex"]},
     ]
@@ -2413,7 +2475,7 @@ def compare_fits(
         residual_normality(np.sqrt(preferred.w) * (preferred.y - preferred.fitted))
         if not _goodness(preferred)["perfect_fit"] and preferred.df > 0 else
         AssumptionCheck(name="Residual diagnostics", status="warn",
-                        detail="The preferred model fits exactly; residuals cannot be checked."),
+                        detail="The model shown fits exactly; residuals cannot be checked."),
         AssumptionCheck(
             name="Same data and weighting for both models", status="info",
             detail="Both models were fitted to exactly the same points with the same weighting, "
@@ -2456,8 +2518,10 @@ def compare_fits(
             "model": preferred.model.key,
             "x_is_log": bool(preferred.model.x_is_log),
             "x_log_spaced": bool(log_spaced),
-            "preferred": "complex" if prefer_complex else "simple",
+            "preferred": "none" if undecided else ("complex" if prefer_complex else "simple"),
+            "shown": "complex" if prefer_complex else "simple",
             "preferred_basis": basis,
+            "same_number_of_parameters": bool(same_size),
             "nested": bool(is_nested),
             "models_swapped": swapped,
             "comparison": comparison_rows,
@@ -2467,13 +2531,21 @@ def compare_fits(
         },
     )
     aic_text = ""
-    if akaike["delta_aicc"] is not None:
-        better = "more complex" if akaike["delta_aicc"] < 0 else "simpler"
+    if aicc_tie:
+        aic_text = (
+            " By AICc the two models are equally supported (difference in AICc = 0; 50% / 50%): "
+            "the data do not distinguish them."
+        )
+    elif akaike["delta_aicc"] is not None:
+        better = word_c if akaike["delta_aicc"] < 0 else word_s
         prob = akaike["probability_complex"] if akaike["delta_aicc"] < 0 else akaike["probability_simple"]
+        weak = abs(akaike["delta_aicc"]) < 2.0
         aic_text = (
             f" By AICc the {better} model is more likely to be correct (difference in AICc = "
             f"{fmt(abs(akaike['delta_aicc']), 3)}; probability {fmt(100 * prob, 3)}% that it is "
-            "the better of the two)."
+            "the better of the two)"
+            + ("; a difference below 2 is weak evidence, so the data do not clearly distinguish "
+               "the two models." if weak else ".")
         )
     if p_value is not None:
         verdict = (
@@ -2487,15 +2559,25 @@ def compare_fits(
             f"{p_phrase(p_value)}. The simpler model is preferred, because a simpler model is "
             f"kept unless P < {alpha:g}."
         )
+    elif undecided:
+        verdict = (
+            f"{nesting_note} '{label_s}' and '{label_c}' fit these data equally well"
+            + (" (they have the same number of fitted parameters and the same residual sum of "
+               "squares)" if same_size else "")
+            + f", so neither can be favoured over the other; the fit of the {word_s} model "
+              f"('{label_s}') is shown."
+        )
     elif basis == "AICc":
+        chosen = label_c if prefer_complex else label_s
         verdict = (
             f"{nesting_note} Comparing '{label_s}' with '{label_c}' by AICc, the "
-            f"{'more complex' if prefer_complex else 'simpler'} model is preferred."
+            f"{word_c if prefer_complex else word_s} model ('{chosen}') is preferred."
         )
     else:
-        verdict = (f"The two models could not be compared formally; the simpler model "
+        verdict = (f"The two models could not be compared formally; the {word_s} model "
                    f"({label_s}) is kept by default.")
     result.interpretation = verdict + aic_text + (
+        " Choose between them on scientific grounds." if undecided else
         " A statistical preference is not proof: also check that the preferred fit is "
         "scientifically sensible.")
     result.methods_text = (
@@ -2625,7 +2707,8 @@ def compare_datasets(
     start = np.concatenate([[float(np.mean([fits[n].theta[idx_shared] for n in names]))],
                             *[fits[n].theta[idx_other] for n in names]])
     problem = _Problem(residual=residual, jacobian=jacobian, lower=lower, upper=upper, n=n_total,
-                       ss_scale=float(sum(np.sum(f.w * f.y**2) for f in fits.values())))
+                       ss_scale=float(sum(np.sum(f.w * f.y**2) for f in fits.values())),
+                       unit=_unit_scale(np.concatenate([np.sqrt(f.w) * f.y for f in fits.values()])))
     cand, _ = _solve(problem, start)
     if cand is None:
         raise StatsError("The global fit with a shared parameter could not be computed.")
@@ -2799,10 +2882,15 @@ def compare_datasets(
 
 
 # ================================================================ table adapters
-_MODEL_HELP = (
+_MODEL_HELP_BASE = (
     "The equation to fit. Dose-response models come in two versions: '_logx' when your X "
-    "values are log10(concentration), and without '_logx' when X is the concentration itself. "
-    "Choose 'user_defined' to type your own equation."
+    "values are log10(concentration), and without '_logx' when X is the concentration itself."
+)
+_MODEL_HELP = _MODEL_HELP_BASE + " Choose 'user_defined' to type your own equation."
+#: compare_curve_parameter offers only the built-in models (its choices exclude 'user_defined')
+_MODEL_HELP_SHARED = (
+    _MODEL_HELP_BASE + " The same built-in equation is fitted to every data set; an equation you "
+    "type yourself cannot be used in this analysis."
 )
 _WEIGHT_HELP = (
     "How much each point counts. 'none' treats all points equally (right when the scatter is "
@@ -2862,7 +2950,9 @@ def _fit_inputs(table: Any, series: Any, use_means: bool, weighting: str) -> tup
                   optional=True,
                   help="Only for the 'user_defined' model. Type the equation with X as the "
                        "independent variable, e.g. Y = Bottom + (Top - Bottom) / (1 + (EC50 / X)^HillSlope). "
-                       "Every other name becomes a parameter to fit."),
+                       "Every other name becomes a parameter to fit, including a lone 'e' (for "
+                       "Euler's number 2.718 write exp(1), and exp(X) for an exponential). The only "
+                       "built-in constant is 'pi' (3.14159)."),
         ParamSpec("initial", "Initial values", kind="text", default="", optional=True,
                   help="Optional starting guesses such as 'Top=100, Bottom=0, EC50=10'. Built-in "
                        "models find their own; a user-defined equation needs rough estimates."),
@@ -2983,7 +3073,7 @@ def _run_compare_fits(
         ParamSpec("series", "Y series to compare", kind="groups", default=None, optional=True,
                   help="Which data sets to compare. Leave empty to compare all of them."),
         ParamSpec("model", "Model", kind="choice", default="dose_response_4pl",
-                  choices=tuple(MODELS), help=_MODEL_HELP),
+                  choices=tuple(MODELS), help=_MODEL_HELP_SHARED),
         ParamSpec("parameter", "Parameter to compare", kind="text", default="", optional=True,
                   help="The parameter that may differ between data sets, e.g. 'EC50' or 'Top'. "
                        "Leave empty to compare the EC50 (dose-response models)."),

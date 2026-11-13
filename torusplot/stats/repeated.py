@@ -39,6 +39,15 @@ contrasts; ``lambda`` = eigenvalues of ``S``)
   is also computed (identical when g = 1).
 * Corrected P values multiply both degrees of freedom of the F test by epsilon.
 
+Scale
+-----
+F ratios, epsilons, P values and effect sizes do not depend on the unit of measurement.
+The data matrix is divided by a power of two close to its largest absolute value before
+anything is computed (an exact operation that rules out overflow / underflow of the sums
+of squares), "no variation" is always judged relative to the data (never against an
+absolute threshold), and sums of squares, means and differences are converted back to
+the units of the data for reporting.
+
 References
 ----------
 * Mauchly JW (1940) Significance test for sphericity of a normal n-variate
@@ -74,8 +83,9 @@ import pandas as pd
 from scipy import stats
 
 from . import effect_sizes as es
-from ._utils import StatsError, check_alpha, fmt, p_phrase, sig_phrase
+from ._utils import StatsError, check_alpha, fmt, is_constant, p_phrase, sig_phrase
 from .factorial import (
+    _UNITS_WARNING,
     _brown_forsythe,
     _check_posthoc,
     _check_ss_type,
@@ -85,10 +95,14 @@ from .factorial import (
     _encode_factor,
     _f_text,
     _level_label,
+    _no_paired_variation,
     _none_if_nan,
     _normality_check,
     _quiet,
+    _resolution,
     _smd_pooled,
+    _to_units,
+    _unit_scale,
 )
 from .multiplicity import METHOD_LABELS, adjust_pvalues
 from .registry import ParamSpec, register
@@ -382,15 +396,20 @@ def _paired_raw(a: np.ndarray, b: np.ndarray, name_a: str, name_b: str, label: s
     if n < 2:
         return _Raw(name_a, name_b, label, cell_a, cell_b, float(diff.mean()) if n else math.nan, math.nan, 0.0)
     sd = float(diff.std(ddof=1))
-    scale = max(1.0, float(np.max(np.abs(a))), float(np.max(np.abs(b))))
-    if sd <= 1e-12 * scale:
+    # "The differences do not vary" is judged against the rounding resolution of the two
+    # columns themselves (a few ulp of their largest magnitude), never an absolute number.
+    if _no_paired_variation(a, b):
         sd = 0.0
     effect = es.cohen_d_paired(a, b, target=f"{name_a} vs {name_b}") if sd > 0 else None
     return _Raw(name_a, name_b, label, cell_a, cell_b, float(diff.mean()), sd / math.sqrt(n), float(n - 1), effect)
 
 
-def _assemble(raws: list[_Raw], method: str, alpha: float) -> tuple[list[Comparison], int]:
-    """Adjust a family of t-type comparisons; returns (comparisons, number not testable)."""
+def _assemble(raws: list[_Raw], method: str, alpha: float, unit: float = 1.0) -> tuple[list[Comparison], int]:
+    """Adjust a family of t-type comparisons; returns (comparisons, number not testable).
+
+    Estimates and standard errors of ``raws`` are in rescaled units; they are multiplied by
+    ``unit`` for reporting (t statistics and P values are unit-free).
+    """
     t_val = np.full(len(raws), np.nan)
     p_raw = np.full(len(raws), np.nan)
     for i, r in enumerate(raws):
@@ -410,9 +429,9 @@ def _assemble(raws: list[_Raw], method: str, alpha: float) -> tuple[list[Compari
             crit = crit_cache[r.df]
         out.append(Comparison(
             id="", group_a=r.group_a, group_b=r.group_b, label=r.label, cell_a=r.cell_a, cell_b=r.cell_b,
-            estimate=_none_if_nan(r.estimate), se=_none_if_nan(r.se),
-            ci_low=r.estimate - crit * r.se if ok else None,
-            ci_high=r.estimate + crit * r.se if ok else None,
+            estimate=_to_units(r.estimate, unit), se=_to_units(r.se, unit),
+            ci_low=_to_units(r.estimate - crit * r.se, unit) if ok else None,
+            ci_high=_to_units(r.estimate + crit * r.se, unit) if ok else None,
             statistic_name="t", statistic=float(t_val[i]) if ok else None,
             df=float(r.df) if r.df >= 1 else None,
             p_value=float(p_raw[i]) if ok else None,
@@ -430,10 +449,10 @@ def _differences_normality(columns: dict[str, np.ndarray], pairs: list[tuple[str
     tested = 0
     for a, b in pairs:
         diff = columns[a] - columns[b]
-        if diff.size < 3 or float(np.ptp(diff)) <= 1e-10 * max(1.0, float(np.max(np.abs(diff)))):
+        if diff.size < 3 or _no_paired_variation(columns[a], columns[b]):
             continue
         with _quiet():
-            w, p = stats.shapiro(diff)
+            w, p = stats.shapiro(diff / _unit_scale(diff))
         if not math.isfinite(float(p)):
             continue
         tested += 1
@@ -478,6 +497,23 @@ def _generalized_eta(ss: float, denominator_extra: float, target: str) -> Effect
     value = ss / denom if denom > 0 else None
     return EffectSize(name="generalized eta squared", value=value, target=target,
                       magnitude=es.magnitude_eta2(value) if value is not None else None)
+
+
+def _rows_to_units(rows: list[dict[str, Any]], unit: float) -> bool:
+    """Convert the ``ss`` / ``ms`` entries of ANOVA rows from rescaled units back to the
+    units of the data (in place). Returns True if some value could not be represented."""
+    lost = False
+    for row in rows:
+        for key in ("ss", "ms"):
+            if row.get(key) is not None:
+                row[key] = _to_units(row[key], unit, 2)
+                lost = lost or row[key] is None
+    return lost
+
+
+def _noise_to_zero(variance: float, data: np.ndarray) -> float:
+    """A variance that is no larger than rounding noise of ``data`` is exactly zero."""
+    return 0.0 if variance <= _resolution(data) ** 2 else variance
 
 
 def _complete_matrix(matrix: Any, names: Any) -> tuple[np.ndarray, list[str], list[str]]:
@@ -545,8 +581,8 @@ def anova_rm_oneway(
     correction = _check_correction(correction)
     hf_variant = _check_hf_variant(hf_variant)
     method = _check_posthoc(posthoc, RM_POSTHOC_METHODS)
-    y, names, notes = _complete_matrix(matrix, names)
-    n, k = y.shape
+    y_raw, names, notes = _complete_matrix(matrix, names)
+    n, k = y_raw.shape
     if control is not None and str(control) not in names:
         raise StatsError(f"Control condition '{control}' is not one of the conditions: {names}.")
     if n < 2:
@@ -555,10 +591,11 @@ def anova_rm_oneway(
             "(and realistically many more)."
         )
     q = k - 1
+    unit = _unit_scale(y_raw)
+    y = y_raw / unit  # exact; everything below is computed in these rescaled units
     grand = float(y.mean())
     ss_total = float(((y - grand) ** 2).sum())
-    scale = max(1.0, float(np.max(np.abs(y))))
-    if float(np.ptp(y)) <= 1e-12 * scale:
+    if is_constant(y):
         ss_total = 0.0
     tiny = 1e-12 * ss_total if ss_total > 0 else math.inf
     scores = _analyse_scores(y @ _orthonormal_contrasts(k), np.zeros(n, dtype=int), 1, 3, hf_variant, tiny)
@@ -586,6 +623,8 @@ def anova_rm_oneway(
          "df_error": None, "error_term": None, "p_reported": None, "partial_eta_sq": None,
          "percent_of_variation": 100.0 if ss_total > 0 else None},
     ]
+    if _rows_to_units(rows, unit):
+        warnings_out.append(_UNITS_WARNING)
     if ss_total == 0:
         warnings_out.append("All values are identical: there is no variation to analyse, so no F test is possible.")
     elif row["f"] is None:
@@ -610,7 +649,7 @@ def anova_rm_oneway(
     if method != "none":
         raws = [_paired_raw(columns[a], columns[b], a, b, None, {factor_name: a}, {factor_name: b})
                 for a, b in pairs]
-        comparisons, untestable = _assemble(raws, method, alpha)
+        comparisons, untestable = _assemble(raws, method, alpha, unit)
         if untestable:
             warnings_out.append(
                 f"{untestable} comparison(s) could not be tested because the paired differences do not vary."
@@ -632,7 +671,8 @@ def anova_rm_oneway(
                    "data were analysed. Subjects must be independent of each other.",
         ),
         _sphericity_check(factor_name, scores),
-        _normality_check(resid, target="residuals (subject and condition effects removed)"),
+        _normality_check(resid, target="residuals (subject and condition effects removed)",
+                         resolution=_resolution(y), negligible=scores.ss_error <= 0),
     ]
     if method != "none":
         assumptions.append(_differences_normality(columns, pairs))
@@ -642,7 +682,7 @@ def anova_rm_oneway(
         _partial_eta(ss_effect, scores.ss_error, q, df_error, factor_name, q),
         _generalized_eta(ss_effect, ss_subjects + scores.ss_error, factor_name),
     ]
-    descriptives = [{"group": name, **_describe(columns[name])} for name in names]
+    descriptives = [{"group": name, **_describe(y_raw[:, j])} for j, name in enumerate(names)]
     cell_means = [{factor_name: d["group"], "mean": d["mean"], "sd": d["sd"], "sem": d["sem"], "n": d["n"]}
                   for d in descriptives]
     sentences = [f"Repeated-measures one-way ANOVA comparing {k} conditions measured in the same {n} subjects."]
@@ -686,7 +726,7 @@ def anova_rm_oneway(
         "p_uncorrected": row["p"], "p_gg": row["p_gg"], "p_hf": row["p_hf"], "p_lower_bound": row["p_lb"],
         "cell_means": cell_means, "factors": [factor_name],
         "n_subjects": n, "n_observations": n * k,
-        "subject_means": [float(v) for v in subject_means],
+        "subject_means": [_to_units(v, unit) for v in subject_means],
     }
     if comparisons:
         extra["comparisons_note"] = _ci_note(method)
@@ -803,6 +843,7 @@ def anova_mixed(
     alpha: float = 0.05,
     hf_variant: str = "original",
     factor_labels: dict[str, str] | None = None,
+    value_label: str | None = None,
 ) -> StatResult:
     """Mixed-design (split-plot) ANOVA: one between-subjects x one within-subjects factor.
 
@@ -831,6 +872,8 @@ def anova_mixed(
       averaged over groups as for the main effect; df = subjects - groups).
 
     All comparisons of the chosen set form one family for the P-value adjustment.
+    ``value_label`` is an optional readable name of the outcome for the text output
+    (default: the name of the ``value`` column).
     """
     alpha = check_alpha(alpha)
     correction = _check_correction(correction)
@@ -844,7 +887,9 @@ def anova_mixed(
     if b_label == w_label:
         b_label, w_label = f"{b_label} (between)", f"{w_label} (within)"
     wide = _pivot_mixed(df, value, subject, between, within, w_label)
-    y, codes = wide.y, wide.codes
+    y_raw, codes = wide.y, wide.codes
+    unit = _unit_scale(y_raw)
+    y = y_raw / unit  # exact; everything below is computed in these rescaled units
     b_levels, w_levels = wide.between_levels, wide.within_levels
     g_all, p = len(b_levels), len(w_levels)
     if p < 2:
@@ -875,7 +920,7 @@ def anova_mixed(
 
     grand = float(y.mean())
     ss_total = float(((y - grand) ** 2).sum())
-    if float(np.ptp(y)) <= 1e-12 * max(1.0, float(np.max(np.abs(y)))):
+    if is_constant(y):
         ss_total = 0.0
     tiny = 1e-12 * ss_total if ss_total > 0 else math.inf
     scores = _analyse_scores(y @ _orthonormal_contrasts(p), codes, g, ss_type, hf_variant, tiny)
@@ -910,6 +955,8 @@ def anova_mixed(
          "df_error": None, "error_term": None, "p_reported": None, "partial_eta_sq": None,
          "percent_of_variation": 100.0 if ss_total > 0 else None},
     ]
+    if _rows_to_units(rows, unit):
+        warnings_out.append(_UNITS_WARNING)
     used, fallback = _resolve_correction(correction, scores)
     if fallback:
         warnings_out.append(fallback)
@@ -942,7 +989,7 @@ def anova_mixed(
             for k_lv, lv in enumerate(w_levels):
                 col = y[:, k_lv]
                 gm = np.array([col[codes == j].mean() for j in range(g)])
-                mse = float(((col - gm[codes]) ** 2).sum()) / (n - g)
+                mse = _noise_to_zero(float(((col - gm[codes]) ** 2).sum()) / (n - g), col)
                 for a, b in itertools.combinations(range(g), 2):
                     est = float(gm[a] - gm[b])
                     se = math.sqrt(mse * (1.0 / counts[a] + 1.0 / counts[b])) if mse > 0 else 0.0
@@ -973,7 +1020,7 @@ def anova_mixed(
         elif posthoc_compare == "between_main":
             subj_mean = y.mean(axis=1)
             gm = np.array([subj_mean[codes == j].mean() for j in range(g)])
-            mse = float(((subj_mean - gm[codes]) ** 2).sum()) / (n - g)
+            mse = _noise_to_zero(float(((subj_mean - gm[codes]) ** 2).sum()) / (n - g), y)
             for a, b in itertools.combinations(range(g), 2):
                 est = float(gm[a] - gm[b])
                 se = math.sqrt(mse * (1.0 / counts[a] + 1.0 / counts[b])) if mse > 0 else 0.0
@@ -992,9 +1039,7 @@ def anova_mixed(
             for a, b in itertools.combinations(range(p), 2):
                 diff = y[:, a] - y[:, b]
                 gm = np.array([diff[codes == j].mean() for j in range(g)])
-                var = float(((diff - gm[codes]) ** 2).sum()) / (n - g)
-                if var <= 1e-24 * max(1.0, float(np.max(np.abs(y))) ** 2):
-                    var = 0.0
+                var = _noise_to_zero(float(((diff - gm[codes]) ** 2).sum()) / (n - g), y[:, [a, b]])
                 if ss_type == 3:
                     est, se = float(gm.mean()), math.sqrt(var * float(np.sum(1.0 / (g**2 * counts))))
                 else:
@@ -1012,7 +1057,7 @@ def anova_mixed(
                 f"differences averaged over groups ({'unweighted' if ss_type == 3 else 'weighted by group size'}; "
                 f"df = {n - g})"
             )
-        comparisons, untestable = _assemble(raws, method, alpha)
+        comparisons, untestable = _assemble(raws, method, alpha, unit)
         if untestable:
             warnings_out.append(
                 f"{untestable} comparison(s) could not be tested (no variation, or too few subjects in a group)."
@@ -1032,8 +1077,10 @@ def anova_mixed(
                    f"{w_label}; {n} subjects with complete data were analysed. Subjects must be independent.",
         ),
         _sphericity_check(f"{w_label} and {inter_name}", scores),
-        _normality_check(resid_within, target="within-subject residuals"),
-        _normality_check(subj_mean - group_mean[codes], target="subject averages (between-subjects part)"),
+        _normality_check(resid_within, target="within-subject residuals",
+                         resolution=_resolution(y), negligible=scores.ss_error <= 0),
+        _normality_check(subj_mean - group_mean[codes], target="subject averages (between-subjects part)",
+                         resolution=_resolution(y), negligible=ss_subjects <= 0),
     ]
     level_checks = [
         _brown_forsythe({b_levels[j]: y[codes == j, k_lv] for j in range(g)}, target=f"{w_label} = {lv}",
@@ -1087,7 +1134,7 @@ def anova_mixed(
     descriptives, cell_means, n_map = [], [], {}
     for j, grp in enumerate(b_levels):
         for k_lv, lv in enumerate(w_levels):
-            desc = _describe(y[codes == j, k_lv])
+            desc = _describe(y_raw[codes == j, k_lv])
             name = f"{grp}: {lv}"
             n_map[name] = desc["n"]
             descriptives.append({between: grp, within: lv, "group": name, **desc})
@@ -1101,7 +1148,8 @@ def anova_mixed(
         return f", {_CORRECTION_LABELS[used]} corrected (epsilon = {fmt(eps, 3)})"
 
     sentences = [
-        f"Mixed-design ANOVA of {value} with {b_label} as between-subjects factor ({g} groups) and {w_label} "
+        f"Mixed-design ANOVA of {value_label or value} with {b_label} as between-subjects factor ({g} groups) "
+        f"and {w_label} "
         f"as within-subjects factor ({p} levels), {n} subjects."
     ]
     for what, row in (("Interaction", row_i), ("Main effect of", row_w)):
@@ -1233,16 +1281,18 @@ def anova_rm_twoway(
             "Some combinations of the two factors have no data at all. Every subject must be measured at "
             "every combination of the two within-subjects factors."
         )
-    y = wide.y[:, order]
-    n = y.shape[0]
+    y_raw = wide.y[:, order]
+    n = y_raw.shape[0]
     if n < 2:
         raise StatsError(
             f"Only {n} subject(s) have a value at every combination of {within_a} and {within_b}; at least 2 "
             "are needed."
         )
+    unit = _unit_scale(y_raw)
+    y = y_raw / unit  # exact; everything below is computed in these rescaled units
     grand = float(y.mean())
     ss_total = float(((y - grand) ** 2).sum())
-    if float(np.ptp(y)) <= 1e-12 * max(1.0, float(np.max(np.abs(y)))):
+    if is_constant(y):
         ss_total = 0.0
     tiny = 1e-12 * ss_total if ss_total > 0 else math.inf
     ca, cb = _orthonormal_contrasts(na), _orthonormal_contrasts(nb)
@@ -1291,6 +1341,8 @@ def anova_rm_twoway(
     rows.append({"source": "Total", "kind": "total", "ss": ss_total, "df": n * na * nb - 1, "ms": None,
                  "f": None, "p": None, "df_error": None, "error_term": None, "p_reported": None,
                  "partial_eta_sq": None, "percent_of_variation": 100.0 if ss_total > 0 else None})
+    if _rows_to_units(rows, unit):
+        warnings_out.append(_UNITS_WARNING)
     if ss_total == 0:
         warnings_out.append("All values are identical: there is no variation to analyse, so no F tests are possible.")
     cell_mean = y.mean(axis=0)
@@ -1302,11 +1354,12 @@ def anova_rm_twoway(
     subj_b = np.column_stack([y[:, b_idx == j].mean(axis=1) for j in range(nb)])
     resid = (y - subj_a[:, a_idx] - subj_b[:, b_idx] + subject_means[:, None]
              - cell_mean[None, :] + a_eff[a_idx][None, :] + b_eff[b_idx][None, :] - grand)
-    assumptions.append(_normality_check(resid, target="residuals of the highest-order error term"))
+    assumptions.append(_normality_check(resid, target="residuals of the highest-order error term",
+                                        resolution=_resolution(y), negligible=all_scores[2].ss_error <= 0))
 
     descriptives, cell_means, n_map = [], [], {}
     for col, (i, j) in enumerate(itertools.product(range(na), range(nb))):
-        desc = _describe(y[:, col])
+        desc = _describe(y_raw[:, col])
         name = f"{a_levels[i]}: {b_levels[j]}"
         n_map[name] = desc["n"]
         descriptives.append({within_a: a_levels[i], within_b: b_levels[j], "group": name, **desc})
@@ -1516,7 +1569,8 @@ def _run_anova_mixed(table: Any, value: str | None = None, subject: str | None =
         long = table.to_long()
         result = anova_mixed(long, "value", "replicate", "column", "row", correction=correction,
                              ss_type=ss_type, posthoc=posthoc, posthoc_compare=posthoc_compare, alpha=alpha,
-                             factor_labels={"row": table.row_label, "column": table.column_label})
+                             factor_labels={"row": table.row_label, "column": table.column_label},
+                             value_label="the measured values")
         result.data_notes = [n for n in result.data_notes if not n.startswith("The same subject label")]
         result.data_notes.insert(
             0, f"Layout: rows = repeated levels ({table.row_label}); column groups = groups of subjects "

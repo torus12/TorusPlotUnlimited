@@ -45,7 +45,9 @@ from ._utils import (
     p_phrase,
     sig_phrase,
 )
+from ._utils import is_constant as _ulp_constant
 from .effect_sizes import eta_squared_ci, magnitude_r
+from .factorial import _unit_scale
 from .registry import ParamSpec, register
 from .result import AssumptionCheck, EffectSize, Parameter, StatResult
 
@@ -127,16 +129,33 @@ def guarded(func: Callable[..., StatResult]) -> Callable[..., StatResult]:
 
 
 def is_constant(arr: np.ndarray) -> bool:
-    """True when all values are identical up to floating-point noise.
+    """True when all values are identical up to floating-point rounding.
 
-    Purely *relative* (unlike ``_utils.is_constant``, which has an absolute floor of 1e-12
-    and would call concentrations expressed in molar, e.g. 1e-15 to 1e-13, constant).
+    This is the shared ulp-based test (``_utils.is_constant``: the spread is at most a few
+    units in the last place of the largest magnitude), applied after dividing the values by
+    a power of two close to their largest magnitude (exact), so the answer depends neither
+    on the unit of measurement nor on a large common offset: 1e15 + (1, 2, ..., 6) and
+    1e-15, 3e-15 both vary; 0.1 + 0.2 and 0.3 do not.
     """
     arr = np.asarray(arr, dtype=float)
     if arr.size < 2:
         return True
-    spread = float(np.ptp(arr))
-    return spread == 0.0 or spread <= 1e-13 * float(np.max(np.abs(arr)))
+    return _ulp_constant(arr / _unit_scale(arr))
+
+
+def centre(arr: np.ndarray) -> tuple[float, np.ndarray]:
+    """Mean and deviations from the mean, accurate also with a large common offset.
+
+    A plain ``arr - arr.mean()`` loses the centring when the running sum of the values
+    exceeds 2**53 times their spacing (e.g. twelve values near 1e15). Here the values are
+    first shifted by a pivot (the first-pass mean; the subtraction of nearby doubles is
+    exact or nearly so), and the mean of the small remainders is removed in a second pass.
+    """
+    arr = np.asarray(arr, dtype=float)
+    pivot = float(arr.mean())
+    shifted = arr - pivot
+    correction = float(shifted.mean())
+    return pivot + correction, shifted - correction
 
 
 def check_level(ci_level: float) -> float:
@@ -240,13 +259,20 @@ def breusch_pagan(residuals: np.ndarray, regressors: np.ndarray) -> dict[str, An
     Regress the squared residuals on the regressors (plus a constant); LM = n R^2 follows a
     chi-square distribution with (number of regressors) df under constant variance.
     """
-    e2 = np.asarray(residuals, dtype=float) ** 2
+    e = np.asarray(residuals, dtype=float)
+    e2 = (e / _unit_scale(e)) ** 2  # LM = n R^2 is unit-free; rescale so squares cannot overflow
     z = np.asarray(regressors, dtype=float)
     if z.ndim == 1:
         z = z[:, None]
     n, k = z.shape
     if n <= k + 1:
         return None
+    # The statistic does not change when a regressor is shifted or rescaled (the auxiliary
+    # regression has a constant), so centre and scale each column first: a large common
+    # offset in X (e.g. 1e15 + 1, 1e15 + 2, ...) would otherwise ruin the least-squares solve.
+    z = np.column_stack([centre(z[:, j])[1] for j in range(k)])
+    spread = np.max(np.abs(z), axis=0)
+    z = z / np.where(spread > 0, spread, 1.0)
     centred = e2 - e2.mean()
     ss_tot = float(centred @ centred)
     if ss_tot <= 0 or not math.isfinite(ss_tot):
@@ -262,6 +288,7 @@ def breusch_pagan(residuals: np.ndarray, regressors: np.ndarray) -> dict[str, An
 def durbin_watson(residuals: np.ndarray) -> float | None:
     """Durbin-Watson statistic sum((e_t - e_{t-1})^2) / sum(e_t^2); about 2 = no serial correlation."""
     e = np.asarray(residuals, dtype=float)
+    e = e / _unit_scale(e)  # a ratio of sums of squares: unit-free
     denom = float(e @ e)
     if e.size < 2 or denom <= 0:
         return None
@@ -307,7 +334,7 @@ def residual_normality(residuals: np.ndarray) -> AssumptionCheck:
                                       "departures. Inspect a QQ plot of the residuals instead.")
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        w, p = stats.shapiro(r)
+        w, p = stats.shapiro(r / _unit_scale(r))  # exact rescaling: W and P are unit-free
     if not math.isfinite(p):
         return AssumptionCheck(name=name, status="warn",
                                detail="The normality test could not be computed for these residuals.")
@@ -410,6 +437,10 @@ def linear_regression(
 ) -> StatResult:
     """Ordinary least-squares straight line Y = intercept + slope * X.
 
+    Everything is computed from the centred data (x - mean(x), y - mean(y)): fitted values,
+    residuals, bands and the X-intercept interval, so a large common offset in X or Y does
+    not cost any precision.
+
     Closed form: slope = S_xy / S_xx, intercept = mean(y) - slope * mean(x),
     s^2 = SS_res / (n - 2), SE(slope) = s / sqrt(S_xx),
     SE(intercept) = s sqrt(1/n + mean(x)^2 / S_xx). Confidence band of the line at x0:
@@ -457,20 +488,23 @@ def linear_regression(
                 "The values are too large or too small to compute with reliably (beyond 1e120 "
                 "or below 1e-120). Change the units of the data and try again."
             )
-    xbar, ybar = float(xa.mean()), float(ya.mean())
+    (xbar, dx), (ybar, dy) = centre(xa), centre(ya)
     if through_origin:
         sxx = float(xa @ xa)
         slope = float(xa @ ya) / sxx
         intercept = 0.0
         ss_tot = float(ya @ ya)
     else:
-        dx, dy = xa - xbar, ya - ybar
         sxx = float(dx @ dx)
         slope = float(dx @ dy) / sxx
         intercept = ybar - slope * xbar
         ss_tot = float(dy @ dy)
-    fitted = intercept + slope * xa
-    resid = ya - fitted
+    if through_origin:
+        fitted = slope * xa
+        resid = ya - fitted
+    else:  # centred form: no cancellation between a huge intercept and slope * x
+        fitted = ybar + slope * dx
+        resid = dy - slope * dx
     ss_res = float(resid @ resid)
     scale_ref = max(ss_tot, float(ya @ ya), 1e-300)
     perfect = ss_res <= PERFECT_FIT_RATIO * scale_ref
@@ -551,18 +585,20 @@ def linear_regression(
             ci_level=ci_level, statistic=t_int, p_value=p_int,
             unit_note=f"Predicted {names[1]} when {names[0]} = 0"))
         if slope != 0:
-            x_int = -intercept / slope
+            x_int = xbar - ybar / slope
             lo = hi = None
             note = f"Where the line crosses {names[1]} = 0"
             if s2 is not None and t_crit is not None:
+                # Fieller's quadratic in u = x0 - mean(x) (centred, so it is not affected by an
+                # offset in X): (ybar + slope u)^2 = g (1/n + u^2 / Sxx).
                 g = t_crit * t_crit * s2
                 qa = slope * slope - g / sxx
-                qb = 2.0 * slope * intercept + 2.0 * g * xbar / sxx
-                qc = intercept * intercept - g * (1.0 / n + xbar * xbar / sxx)
+                qb = 2.0 * slope * ybar
+                qc = ybar * ybar - g / n
                 disc = qb * qb - 4.0 * qa * qc
                 if qa > 0 and disc >= 0:
                     root = math.sqrt(disc)
-                    lo, hi = sorted(((-qb - root) / (2.0 * qa), (-qb + root) / (2.0 * qa)))
+                    lo, hi = sorted((xbar + (-qb - root) / (2.0 * qa), xbar + (-qb + root) / (2.0 * qa)))
                     note += "; CI by Fieller's theorem"
                 else:
                     note += ("; no finite CI because the slope is not clearly different from zero")
@@ -576,13 +612,15 @@ def linear_regression(
 
     # ---- curve + bands
     grid = np.linspace(float(xa.min()), float(xa.max()), GRID_POINTS)
-    y_grid = intercept + slope * grid
+    # grid deviations from mean(x), built from the centred data (exact also with a huge offset)
+    grid_dx = np.linspace(float(dx.min()), float(dx.max()), GRID_POINTS)
+    y_grid = slope * grid if through_origin else ybar + slope * grid_dx
     curve: dict[str, Any] = {"x": grid.tolist(), "y": y_grid.tolist()}
     if s2 is not None and t_crit is not None:
         if through_origin:
             leverage = grid * grid / sxx
         else:
-            leverage = 1.0 / n + (grid - xbar) ** 2 / sxx
+            leverage = 1.0 / n + grid_dx**2 / sxx
         half_ci = t_crit * np.sqrt(s2 * leverage)
         half_pred = t_crit * np.sqrt(s2 * (1.0 + leverage))
         curve.update({
@@ -812,8 +850,10 @@ def compare_slopes(
     ss_sep = 0.0
     sxx_sum = sxy_sum = 0.0
     rows = []
+    centred: list[tuple[np.ndarray, np.ndarray]] = []
     for name, (xa, ya) in cleaned.items():
-        dx, dy = xa - xa.mean(), ya - ya.mean()
+        (x_mean, dx), (y_mean, dy) = centre(xa), centre(ya)
+        centred.append((dx, dy))
         sxx, sxy, syy = float(dx @ dx), float(dx @ dy), float(dy @ dy)
         b = sxy / sxx
         ss = max(syy - b * sxy, 0.0)
@@ -821,17 +861,14 @@ def compare_slopes(
         sxx_sum += sxx
         sxy_sum += sxy
         rows.append({"group": name, "n": int(xa.size), "slope": b,
-                     "intercept": float(ya.mean() - b * xa.mean()),
-                     "x_mean": float(xa.mean()), "mean": float(ya.mean()),
+                     "intercept": float(y_mean - b * x_mean),
+                     "x_mean": x_mean, "mean": y_mean,
                      "ss_residual": ss, "sxx": sxx})
     common_slope = sxy_sum / sxx_sum
-    ss_common = sum(
-        float(np.sum(((ya - ya.mean()) - common_slope * (xa - xa.mean())) ** 2))
-        for xa, ya in cleaned.values()
-    )
+    ss_common = sum(float(np.sum((dy - common_slope * dx) ** 2)) for dx, dy in centred)
     all_x = np.concatenate([xa for xa, _ in cleaned.values()])
     all_y = np.concatenate([ya for _, ya in cleaned.values()])
-    dxa, dya = all_x - all_x.mean(), all_y - all_y.mean()
+    dxa, dya = centre(all_x)[1], centre(all_y)[1]
     one_slope = float(dxa @ dya) / float(dxa @ dxa)
     ss_one = float(np.sum((dya - one_slope * dxa) ** 2))
     df_common = n_total - k - 1
@@ -886,10 +923,7 @@ def compare_slopes(
             name="partial eta squared (slopes)", value=value,
             ci_low=None if math.isnan(lo) else lo, ci_high=None if math.isnan(hi) else hi,
             ci_level=ci_level, ci_method="noncentral F (Steiger 2004)")
-    resid_all = np.concatenate([
-        ya - (row["intercept"] + row["slope"] * xa)
-        for (xa, ya), row in zip(cleaned.values(), rows)
-    ])
+    resid_all = np.concatenate([dy - row["slope"] * dx for (dx, dy), row in zip(centred, rows)])
     result = StatResult(
         analysis="compare_slopes",
         test_name="Comparison of regression slopes (analysis of covariance)",

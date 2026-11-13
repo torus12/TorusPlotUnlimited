@@ -1073,3 +1073,183 @@ def test_engine_and_fallback_edge_cases():
     r = rp.anova_rm_twoway(two, "y", "id", "drug", "time", correction="hf")
     assert any("Huynh-Feldt" in w for w in r.warnings)
     assert table_row(r, "drug x time")["correction"] == "Greenhouse-Geisser"
+
+
+# =============================================================================
+# Unit of measurement: every statistic is scale-free (audit part 2: A1-A4, C2)
+# =============================================================================
+SCALES = [1e-13, 1.0, 1e9, 1e150]
+
+
+def _scale_matrix():
+    rng = np.random.default_rng(7)
+    return rng.normal(5.0, 1.0, (8, 4)) + np.array([0.0, 0.5, 1.0, 2.0])
+
+
+def _scale_mixed(scale=1.0):
+    rng = np.random.default_rng(11)
+    rows = []
+    for s in range(11):
+        group = "g1" if s < 5 else "g2"
+        effect = rng.normal(0.0, 1.0)
+        for w in range(3):
+            rows.append((f"s{s}", group, f"t{w}",
+                         (5.0 + effect + (1.0 * w if group == "g1" else 0.0) + rng.normal(0.0, 0.7)) * scale))
+    return pd.DataFrame(rows, columns=["subject", "group", "time", "y"])
+
+
+def _scale_twoway(scale=1.0):
+    rng = np.random.default_rng(8)
+    rows = []
+    for s in range(6):
+        effect = rng.normal()
+        for a in "xy":
+            for b in "123":
+                rows.append((s, a, b, (effect + (a == "y") + 0.3 * int(b) + rng.normal(0, 0.6)) * scale))
+    return pd.DataFrame(rows, columns=["s", "a", "b", "y"])
+
+
+def _unit_free(res):
+    """Everything in a result that must not depend on the unit of the data."""
+    return {
+        "f": res.statistic, "p": res.p_value, "df": res.df, "df2": res.df2,
+        "table_f": [r["f"] for r in res.anova_table], "table_p": [r.get("p_reported") for r in res.anova_table],
+        "pct": [r["percent_of_variation"] for r in res.anova_table],
+        "effects": [(e.value, e.ci_low, e.ci_high) for e in res.effect_sizes],
+        "assumption_p": [a.p_value for a in res.assumptions],
+        "comp": [(c.statistic, c.p_value, c.p_adjusted, c.effect_size.value if c.effect_size else None)
+                 for c in res.comparisons],
+    }
+
+
+def _in_units(res, scale):
+    """Quantities that carry the unit of the data, divided by the unit (power 1 or 2)."""
+    return {
+        "ss": [None if r["ss"] is None else r["ss"] / scale / scale for r in res.anova_table],
+        "ms": [None if r["ms"] is None else r["ms"] / scale / scale for r in res.anova_table],
+        "means": [d["mean"] / scale for d in res.descriptives],
+        "sds": [d["sd"] / scale for d in res.descriptives],
+        "comp": [(c.estimate / scale, c.se / scale, c.ci_low / scale, c.ci_high / scale) for c in res.comparisons],
+    }
+
+
+def _assert_same(a, b, rel=1e-9, path=""):
+    """Recursive comparison of nested dicts / lists of numbers (None must match None)."""
+    if isinstance(a, dict):
+        assert isinstance(b, dict) and set(a) == set(b), path
+        for key in a:
+            _assert_same(a[key], b[key], rel, f"{path}/{key}")
+    elif isinstance(a, list | tuple):
+        assert isinstance(b, list | tuple) and len(a) == len(b), path
+        for i, (u, v) in enumerate(zip(a, b)):
+            _assert_same(u, v, rel, f"{path}[{i}]")
+    elif a is None or b is None:
+        assert a is None and b is None, f"{path}: {a!r} vs {b!r}"
+    else:
+        assert a == pytest.approx(b, rel=rel, abs=1e-12), f"{path}: {a!r} vs {b!r}"
+
+
+@pytest.mark.parametrize("scale", SCALES)
+def test_rm_oneway_does_not_depend_on_the_unit_of_measurement(scale):
+    base = rp.anova_rm_oneway(_scale_matrix(), list("abcd"), posthoc="holm")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # no overflow / underflow warnings may leak
+        res = rp.anova_rm_oneway(_scale_matrix() * scale, list("abcd"), posthoc="holm")
+    assert res.statistic is not None and len(res.comparisons) == 6
+    _assert_same(_unit_free(res), _unit_free(base))
+    _assert_same(_in_units(res, scale), _in_units(base, 1.0))
+    assert res.extra["subject_means"] == pytest.approx([v * scale for v in base.extra["subject_means"]], rel=1e-12)
+    json.loads(res.model_dump_json())
+
+
+@pytest.mark.parametrize("scale", SCALES)
+@pytest.mark.parametrize("compare", rp.MIXED_COMPARE)
+def test_mixed_anova_does_not_depend_on_the_unit_of_measurement(scale, compare):
+    kwargs = {"posthoc": "holm", "posthoc_compare": compare}
+    base = rp.anova_mixed(_scale_mixed(), "y", "subject", "group", "time", **kwargs)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        res = rp.anova_mixed(_scale_mixed(scale), "y", "subject", "group", "time", **kwargs)
+    assert res.statistic is not None and res.comparisons
+    _assert_same(_unit_free(res), _unit_free(base))
+    _assert_same(_in_units(res, scale), _in_units(base, 1.0))
+
+
+@pytest.mark.parametrize("scale", SCALES)
+def test_rm_twoway_does_not_depend_on_the_unit_of_measurement(scale):
+    base = rp.anova_rm_twoway(_scale_twoway(), "y", "s", "a", "b")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        res = rp.anova_rm_twoway(_scale_twoway(scale), "y", "s", "a", "b")
+    assert res.statistic is not None
+    _assert_same(_unit_free(res), _unit_free(base))
+    _assert_same(_in_units(res, scale), _in_units(base, 1.0))
+
+
+@pytest.mark.parametrize("scale", [1e-170, 1e160, 1e300])
+def test_rm_anova_with_extreme_magnitudes_gives_the_unit_free_result_and_says_what_is_missing(scale):
+    """Squares of such values cannot be represented: the F test is still right (computed on
+    rescaled data), sums of squares are left empty and a warning explains why."""
+    base = rp.anova_rm_oneway(_scale_matrix(), list("abcd"), posthoc="holm")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        res = rp.anova_rm_oneway(_scale_matrix() * scale, list("abcd"), posthoc="holm")
+        mixed = rp.anova_mixed(_scale_mixed(scale), "y", "subject", "group", "time")
+        twoway = rp.anova_rm_twoway(_scale_twoway(scale), "y", "s", "a", "b")
+    _assert_same(_unit_free(res), _unit_free(base))
+    assert mixed.statistic == pytest.approx(
+        rp.anova_mixed(_scale_mixed(), "y", "subject", "group", "time").statistic, rel=1e-9)
+    assert twoway.statistic == pytest.approx(rp.anova_rm_twoway(_scale_twoway(), "y", "s", "a", "b").statistic,
+                                             rel=1e-9)
+    for r in (res, mixed, twoway):
+        assert all(row["ss"] is None for row in r.anova_table if row["kind"] != "total" or True)
+        assert any("cannot be written as ordinary numbers" in w for w in r.warnings)
+        assert all(math.isfinite(d["mean"]) for d in r.descriptives)
+        json.loads(r.model_dump_json())
+    # means and paired differences are still reported in the units of the data
+    assert res.comparisons[0].estimate == pytest.approx(base.comparisons[0].estimate * scale, rel=1e-9)
+
+
+def test_paired_comparisons_survive_small_units_and_agree_with_scipy():
+    y = _scale_matrix() * 1e-12
+    names = list("abcd")
+    res = rp.anova_rm_oneway(y, names, posthoc="holm")
+    assert not any("could not be tested" in w for w in res.warnings)
+    for comp in res.comparisons:
+        ref = stats.ttest_rel(y[:, names.index(comp.group_a)], y[:, names.index(comp.group_b)])
+        assert comp.statistic == pytest.approx(ref.statistic, rel=1e-9)
+        assert comp.p_value == pytest.approx(ref.pvalue, rel=1e-9)
+
+
+@pytest.mark.parametrize("scale", [1e-13, 1.0, 1e9])
+def test_constant_differences_are_untestable_at_every_scale(scale):
+    """b = a + constant: the paired differences do not vary (only rounding noise), whatever
+    the unit; c varies and stays testable."""
+    rng = np.random.default_rng(3)
+    a = rng.normal(10.0, 2.0, 7)
+    y = np.column_stack([a, a + 0.1, a + rng.normal(1.0, 0.5, 7)]) * scale
+    res = rp.anova_rm_oneway(y, ["a", "b", "c"], posthoc="holm")
+    ab = res.comparison("a", "b")
+    assert ab.p_value is None and ab.statistic is None
+    assert res.comparison("a", "c").p_value is not None
+    assert any("1 comparison(s) could not be tested" in w for w in res.warnings)
+
+
+def test_large_offset_with_small_spread_is_not_called_identical():
+    """ulp-based 'identical' test: 1e9 + noise of order 1 is real variation."""
+    y = _scale_matrix() + 1e9
+    res = rp.anova_rm_oneway(y, list("abcd"), posthoc="none")
+    base = rp.anova_rm_oneway(_scale_matrix(), list("abcd"), posthoc="none")
+    assert res.statistic == pytest.approx(base.statistic, rel=1e-6)
+    same = rp.anova_rm_oneway(np.full((5, 3), 1e9), list("abc"), posthoc="none")
+    assert same.statistic is None and any("identical" in w for w in same.warnings)
+
+
+def test_grouped_table_text_does_not_leak_the_internal_column_name(run):
+    table = GroupedTable.from_cells(
+        "uptake", {t: {g: list(np.random.default_rng(i + 3 * j).normal(5 + i + j, 1, 4))
+                       for j, g in enumerate(["Ctl", "Drug"])} for i, t in enumerate(["t0", "t1", "t2"])},
+        row_label="Time", column_label="Treatment")
+    res = run(table, "anova_mixed")
+    assert res.interpretation.startswith("Mixed-design ANOVA of the measured values with Treatment")
+    assert " of value " not in res.interpretation

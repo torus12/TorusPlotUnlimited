@@ -49,6 +49,7 @@ References
 from __future__ import annotations
 
 import math
+import re
 import warnings as _warnings
 from collections.abc import Iterable
 from typing import Any
@@ -667,10 +668,54 @@ def chi_square_test(
 
 
 # ============================================================= chi-square for trend
+def _trend_scores(scores: Any, names: list[str]) -> tuple[np.ndarray, bool]:
+    """Scores of the ordered categories: (array, True when the user supplied them).
+
+    ``scores`` may be ``None`` / empty text (equally spaced 1, 2, ..., k), a sequence of
+    numbers, or text such as ``"0, 1, 5"`` (separated by commas, semicolons or spaces).
+    """
+    k = len(names)
+    listing = ", ".join(names)
+    if scores is None or (isinstance(scores, str) and not scores.strip()):
+        return np.arange(1, k + 1, dtype=float), False
+    if isinstance(scores, str):
+        parts = [part for part in re.split(r"[,;\s]+", scores.strip()) if part]
+    else:
+        try:
+            parts = list(scores)
+        except TypeError:
+            raise StatsError(
+                "The category scores must be a list of numbers, for example '0, 1, 5'."
+            ) from None
+    values = []
+    for part in parts:
+        try:
+            values.append(float(part))
+        except (TypeError, ValueError):
+            raise StatsError(
+                f"The category score '{part}' is not a number. Enter one number per ordered category, "
+                f"separated by commas, for example '0, 1, 5' (leave the box empty for equally spaced "
+                "scores 1, 2, 3, ...)."
+            ) from None
+    if len(values) != k:
+        raise StatsError(
+            f"The trend test needs one numeric score for each of the {k} ordered categories ({listing}), "
+            f"but {len(values)} score(s) were given. Enter exactly one number per category, in the same "
+            "order, or leave the box empty for equally spaced scores."
+        )
+    arr = np.asarray(values, dtype=float)
+    if not np.all(np.isfinite(arr)):
+        raise StatsError("The category scores must be ordinary finite numbers (no 'inf' or 'nan').")
+    if np.ptp(arr) == 0:
+        raise StatsError("All category scores are identical, so a trend cannot be tested. Give the "
+                         "categories different scores, such as the doses themselves.")
+    return arr, True
+
+
 def chi_square_trend(
     counts: Any,
     *,
-    scores: Iterable[float] | None = None,
+    scores: Any = None,
     row_names: Iterable[Any] | None = None,
     column_names: Iterable[Any] | None = None,
     row_label: str = "Group",
@@ -690,6 +735,13 @@ def chi_square_trend(
     which equals ``N r^2`` for the correlation r between outcome and score. The
     remainder of the ordinary (uncorrected) chi-square, with k - 2 df, tests departure
     from a straight-line trend.
+
+    ``scores``: one number per ordered category, as a sequence or as text such as
+    ``"0, 1, 5"`` (for example the doses themselves when they are not evenly spaced).
+    ``None`` or empty text means equally spaced scores 1, 2, ..., k. The statistic does not
+    change when all scores are shifted or multiplied by a constant; only their relative
+    spacing matters. Wrong counts of scores, non-numeric or identical scores raise
+    ``StatsError``.
     """
     alpha = check_alpha(alpha)
     arr, rows, cols = _validate_counts(counts, row_names, column_names)
@@ -708,9 +760,7 @@ def chi_square_trend(
             "in rows) or exactly two rows (ordered categories in columns)."
         )
     k = len(ordered_names)
-    s = np.arange(1, k + 1, dtype=float) if scores is None else np.asarray(list(scores), dtype=float)
-    if s.size != k or not np.all(np.isfinite(s)):
-        raise StatsError(f"The trend test needs one numeric score for each of the {k} ordered categories.")
+    s, custom_scores = _trend_scores(scores, [str(v) for v in ordered_names])
     n = float(totals.sum())
     big_r = float(x.sum())
     num = n * (n * float((x * s).sum()) - big_r * float((totals * s).sum())) ** 2
@@ -726,6 +776,14 @@ def chi_square_trend(
     corr = math.copysign(math.sqrt(chi2 / n), slope) if slope != 0 else 0.0
     chi2_total, expected = _pearson(arr)
     warnings: list[str] = []
+    steps = np.diff(s)
+    if custom_scores and not (np.all(steps > 0) or np.all(steps < 0)):
+        warnings.append(
+            "The scores you entered are not in steadily increasing (or decreasing) order across the "
+            f"categories as listed ({', '.join(f'{name}: {fmt(v)}' for name, v in zip(ordered_names, s))}). "
+            "The trend is tested along the scores, not along the order of the table; check that each "
+            "score sits against the right category."
+        )
     departure = None
     if k > 2:
         dep = max(chi2_total - chi2, 0.0)
@@ -739,7 +797,8 @@ def chi_square_trend(
     small = int((expected < 5).sum())
     extra = _base_extra(arr, rows, cols, row_label, column_label)
     extra.update({
-        "scores": s.tolist(), "ordered_categories": ordered_names,
+        "scores": s.tolist(), "scores_source": "entered by the user" if custom_scores else "equally spaced (default)",
+        "ordered_categories": ordered_names,
         "proportions": props.tolist(), "proportion_of": binary_names[0],
         "chi2_total": chi2_total, "df_total": k - 1, "departure_from_trend": departure,
         "expected": expected.tolist(), "z": math.copysign(math.sqrt(chi2), slope) if slope != 0 else 0.0,
@@ -761,9 +820,19 @@ def chi_square_trend(
                         if small else "All expected counts are at least 5."),
             ),
             AssumptionCheck(
-                name="Ordered, evenly spaced categories", status="info",
-                detail=f"The categories were scored {', '.join(fmt(v) for v in s)} in the order given. "
-                       "The test assumes these scores reflect the real spacing.",
+                name="Ordered categories with meaningful scores" if custom_scores
+                else "Ordered, evenly spaced categories",
+                status="info",
+                detail=(
+                    f"The categories were given the scores you entered ({', '.join(fmt(v) for v in s)}, in "
+                    "the order of the table). The test assumes these scores reflect the real spacing "
+                    "between the categories."
+                    if custom_scores else
+                    f"The categories were scored {', '.join(fmt(v) for v in s)} in the order given "
+                    "(equally spaced). The test assumes these scores reflect the real spacing; if the "
+                    "categories are not evenly spaced (for example doses 0, 1 and 5), enter the real "
+                    "values as category scores."
+                ),
             ),
             *_counts_assumptions(),
         ],
@@ -775,21 +844,29 @@ def chi_square_trend(
         effect_sizes=[EffectSize(name="r (linear trend)", value=corr, magnitude=magnitude_r(corr))],
         parameters=[Parameter(
             name="Slope", value=slope,
-            unit_note=f"Change in the proportion of {binary_names[0]} per one-step increase in score.",
+            unit_note=f"Change in the proportion of {binary_names[0]} per "
+                      + ("one-unit increase in the score you entered." if custom_scores
+                         else "one-step increase in score."),
         )],
         n={name: int(totals[i]) for i, name in enumerate(ordered_names)},
         descriptives=_descriptive_rows(arr, rows, cols),
         warnings=warnings,
         data_notes=[f"Trend tested across {ordered_label} ({' < '.join(ordered_names)}); proportion of "
-                    f"{binary_label} = {binary_names[0]}."],
+                    f"{binary_label} = {binary_names[0]}."]
+        + ([f"Category scores entered by the user: "
+            f"{', '.join(f'{name} = {fmt(v)}' for name, v in zip(ordered_names, s))}."] if custom_scores else []),
         interpretation=(
             f"The proportion of {binary_names[0]} {direction} across {ordered_label} ({prop_text}); the "
             f"linear trend was {sig_phrase(p_value, alpha)} (chi-square for trend = {fmt(chi2)}, df = 1; "
-            f"slope {fmt(slope * 100, 3)} percentage points per step)."
+            f"slope {fmt(slope * 100, 3)} percentage points per "
+            + (f"unit of the entered scores, {', '.join(fmt(v) for v in s)})." if custom_scores else "step).")
         ),
         methods_text=(
             f"A linear trend in proportions across {ordered_label} was tested with the Cochran-Armitage "
-            f"chi-square test for trend (alpha = {alpha:g})."
+            f"chi-square test for trend ("
+            + (f"category scores {', '.join(fmt(v) for v in s)}" if custom_scores
+               else "equally spaced category scores")
+            + f"; alpha = {alpha:g})."
         ),
         citations=[CITATIONS["cochran"], CITATIONS["armitage"]],
         extra=extra,
@@ -1148,11 +1225,18 @@ def _run_fisher_exact(table: Any, alternative: str = "two-sided", alpha: float =
     label="Chi-square test for trend",
     category="Contingency tables",
     tables=("contingency",),
-    params=(_ALPHA,),
+    params=(
+        ParamSpec("scores", "Category scores (optional)", kind="text", default="", optional=True,
+                  help="Numbers that say how far apart the ordered groups are, one per group in the order "
+                       "of the table, separated by commas: e.g. 0, 1, 5 for doses of 0, 1 and 5 mg. Leave "
+                       "empty to treat the groups as equally spaced (scores 1, 2, 3, ...), which is right "
+                       "for evenly spaced doses or for ranks such as mild / moderate / severe."),
+        _ALPHA,
+    ),
     description="For a yes/no outcome across ordered groups (such as increasing doses): tests whether "
                 "the proportion rises or falls steadily. Needs a table with two columns or two rows.",
     citation="Cochran (1954) Biometrics 10:417-451; Armitage (1955) Biometrics 11:375-386",
 )
-def _run_chi_square_trend(table: Any, alpha: float = 0.05, **_: Any) -> StatResult:
+def _run_chi_square_trend(table: Any, scores: Any = "", alpha: float = 0.05, **_: Any) -> StatResult:
     inputs, notes = _table_inputs(table)
-    return _with_notes(chi_square_trend(**inputs, alpha=alpha), notes)
+    return _with_notes(chi_square_trend(**inputs, scores=scores, alpha=alpha), notes)

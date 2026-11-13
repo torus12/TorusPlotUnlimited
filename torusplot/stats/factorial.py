@@ -22,10 +22,24 @@ What is computed
   least-squares fits), implemented in :func:`_ss_model_comparison`.
 
 * Multiple comparisons use the **pooled error of the whole model** (residual mean
-  square and residual df). Without covariates the compared means are the observed
-  cell means (marginal means = unweighted averages of the cell means); with covariates
-  they are the covariate-adjusted (least-squares) means from the model, evaluated at
-  the mean of each covariate.
+  square and residual df) and always compare the **least-squares (estimated marginal)
+  means of the model that was fitted**: cell means ``L b`` predicted from the model
+  coefficients ``b``, with covariance ``L Cov(b) L'``; marginal means are equally
+  weighted averages of those cell predictions (Searle, Speed & Milliken 1980).
+
+  - Full factorial model without covariates: the model reproduces the observed cell
+    means, so these are the observed cell means with covariance MSE * diag(1 / n).
+  - Model **without the interaction** (``interactions=False``, or one value per cell):
+    the cell means are those of the additive model, so a main-effect comparison is the
+    corresponding contrast of the model coefficients with its model-based standard
+    error. With unequal cell sizes this differs from the difference of the averaged
+    observed cell means (which belong to the saturated model, not to the fitted one).
+  - With covariates: covariate-adjusted means evaluated at the mean of each covariate.
+
+* Scale: every test statistic is unit-free. The outcome is divided internally by a
+  power of two close to its largest absolute value (an exact operation) before the
+  model is fitted, and sums of squares, means and standard errors are converted back
+  for reporting, so the results do not depend on the unit of measurement.
 
   - Tukey (Tukey-Kramer for unequal n): P = P(Q[k, df] > |t| * sqrt(2)), where ``k``
     is the number of means compared in one family: the number of levels of the factor
@@ -48,6 +62,8 @@ References
   different classes. *J Am Stat Assoc* 29:51-66.
 * Searle SR (1987) *Linear Models for Unbalanced Data*. Wiley (Type II / III
   hypotheses, unweighted means, least-squares means).
+* Searle SR, Speed FM, Milliken GA (1980) Population marginal means in the linear
+  model: an alternative to least squares means. *Am Stat* 34:216-221.
 * Tukey JW (1949) Comparing individual means in the analysis of variance.
   *Biometrics* 5:99-114; Kramer CY (1956) Extension of multiple range tests to group
   means with unequal numbers of replications. *Biometrics* 12:307-310.
@@ -64,6 +80,7 @@ from __future__ import annotations
 import itertools
 import math
 import re
+import sys
 import warnings
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -184,13 +201,90 @@ def _posthoc_label(method: str, balanced: bool = True) -> str:
     return METHOD_LABELS[method]
 
 
+def _unit_scale(values: Any) -> float:
+    """Power of two just below the largest absolute value (1.0 for empty / all-zero data).
+
+    Dividing by it is exact in binary floating point and brings the data to order 1, so
+    sums of squares can neither overflow nor underflow and tolerances written for
+    "ordinary" numbers become relative to the data's own magnitude.
+    """
+    arr = np.asarray(values, dtype=float)
+    arr = arr[np.isfinite(arr)]
+    top = float(np.max(np.abs(arr))) if arr.size else 0.0
+    if not top > 0.0:
+        return 1.0
+    return math.ldexp(1.0, math.frexp(top)[1] - 1)
+
+
+def _to_units(value: Any, unit: float, power: int = 1) -> float | None:
+    """``value * unit**power`` (back to the units of the data).
+
+    Returns ``None`` when the result cannot be represented as an ordinary double
+    (overflow, or underflow of a non-zero value), so that no ``inf`` / garbage is reported.
+    """
+    if value is None:
+        return None
+    start = float(value)
+    out = start
+    for _ in range(power):
+        out *= unit
+    if math.isnan(start):
+        return None
+    if not math.isfinite(out) or (start != 0.0 and abs(out) < sys.float_info.min):
+        return None
+    return out
+
+
+def _no_variation(values: Any) -> bool:
+    """Unit-free "all values identical": the shared ulp-based test applied after the exact
+    rescaling of :func:`_unit_scale` (so that extremely small units are not mistaken for
+    "no spread")."""
+    arr = np.asarray(values, dtype=float)
+    return is_constant(arr / _unit_scale(arr))
+
+
+_UNITS_WARNING = (
+    "The values are so large or so small that sums of squares (and possibly other quantities) "
+    "cannot be written as ordinary numbers in the units of the data; those entries are left empty. "
+    "F ratios, P values and effect sizes do not depend on the unit and are reported. Expressing the "
+    "data in a more convenient unit avoids this."
+)
+
+
+def _resolution(values: Any) -> float:
+    """Spread that rounding alone can produce in numbers derived from ``values``
+    (a few units in the last place of the largest magnitude)."""
+    arr = np.asarray(values, dtype=float)
+    arr = arr[np.isfinite(arr)]
+    if arr.size == 0:
+        return 0.0
+    return 8.0 * float(np.spacing(float(np.max(np.abs(arr)))))
+
+
+def _no_paired_variation(a: Any, b: Any) -> bool:
+    """True when the paired differences ``a - b`` do not vary beyond rounding.
+
+    The differences inherit the rounding error of ``a`` and ``b`` (a few ulp of *their*
+    magnitude, which can be far larger than an ulp of the difference itself: 10.1 - 10.0
+    is not exactly 20.2 - 20.1), so the spread is compared with the resolution of the two
+    columns. No absolute threshold is involved: the answer does not depend on the unit.
+    """
+    a = np.ravel(np.asarray(a, dtype=float))
+    b = np.ravel(np.asarray(b, dtype=float))
+    if a.size < 2:
+        return True
+    return bool(float(np.ptp(a - b)) <= _resolution(np.concatenate([a, b])))
+
+
 def _describe(values: np.ndarray) -> dict[str, Any]:
     arr = np.asarray(values, dtype=float)
     n = int(arr.size)
-    sd = float(arr.std(ddof=1)) if n > 1 else None
+    unit = _unit_scale(arr)  # computed on rescaled values so sums and squares cannot overflow
+    scaled = arr / unit
+    sd = _to_units(float(scaled.std(ddof=1)), unit) if n > 1 else None
     return {
         "n": n,
-        "mean": float(arr.mean()) if n else None,
+        "mean": _to_units(float(scaled.mean()), unit) if n else None,
         "sd": sd,
         "sem": sd / math.sqrt(n) if sd is not None else None,
         "median": float(np.median(arr)) if n else None,
@@ -203,18 +297,27 @@ def _f_text(f: float | None, df1: float, df2: float) -> str:
     return f"F({fmt(df1)}, {fmt(df2)}) = {fmt(f)}"
 
 
-def _normality_check(residuals: np.ndarray, target: str = "model residuals") -> AssumptionCheck:
-    """Shapiro-Wilk test on residuals (alpha 0.05)."""
+def _normality_check(residuals: np.ndarray, target: str = "model residuals", *,
+                     resolution: float = 0.0, negligible: bool = False) -> AssumptionCheck:
+    """Shapiro-Wilk test on residuals (alpha 0.05).
+
+    The test is unit-free: whether the residuals "do not vary" is decided relative to the
+    data (never against an absolute threshold). ``resolution`` is the spread that rounding
+    alone can produce in these residuals (see :func:`_resolution`, in the residuals' own
+    units); ``negligible=True`` says that the caller found the residual variation to be
+    zero relative to the total variation (a perfect fit).
+    """
     name = "Normality of residuals (Shapiro-Wilk)"
     arr = np.asarray(residuals, dtype=float)
     arr = arr[np.isfinite(arr)]
     if arr.size < 3:
         return AssumptionCheck(name=name, target=target, status="warn",
                                detail="Too few values to test normality (need at least 3).")
-    scale = max(1.0, float(np.max(np.abs(arr))))
-    if float(np.ptp(arr)) <= 1e-10 * scale:
+    top = float(np.max(np.abs(arr)))
+    if negligible or top == 0.0 or float(np.ptp(arr)) <= max(resolution, 4.0 * float(np.spacing(top))):
         return AssumptionCheck(name=name, target=target, status="warn",
                                detail="The residuals are all (nearly) identical, so normality cannot be tested.")
+    arr = arr / _unit_scale(arr)  # exact; keeps W and P independent of the unit of measurement
     with _quiet():
         w, p = stats.shapiro(arr)
     if not (math.isfinite(float(w)) and math.isfinite(float(p))):
@@ -238,6 +341,9 @@ def _brown_forsythe(groups: dict[str, np.ndarray], target: str,
                     name: str = "Equal variances (Brown-Forsythe)") -> AssumptionCheck:
     """Brown-Forsythe (median-centred Levene) test across groups with n >= 2."""
     usable = {k: np.asarray(v, dtype=float) for k, v in groups.items() if np.asarray(v).size >= 2}
+    if usable:  # common rescaling (exact): the statistic is unit-free, its squares must not overflow
+        unit = _unit_scale(np.concatenate(list(usable.values())))
+        usable = {k: v / unit for k, v in usable.items()}
     skipped = len(groups) - len(usable)
     skip_note = f" {skipped} group(s) with a single value were left out." if skipped else ""
     if len(usable) < 2:
@@ -368,9 +474,13 @@ class _Design:
     levels: list[list[str]]
     covariates: list[str]
     codes: np.ndarray  # (N, n_factors) integer level codes
-    y: np.ndarray
-    cov: np.ndarray  # (N, n_covariates)
+    y: np.ndarray  # outcome divided by ``unit`` (what the model is fitted to)
+    cov: np.ndarray  # (N, n_covariates), each column divided by its ``cov_units`` entry
     notes: list[str] = field(default_factory=list)
+    unit: float = 1.0  # power of two: outcome in data units = y * unit
+    cov_units: list[float] = field(default_factory=list)
+    y_raw: np.ndarray | None = None  # outcome in the units of the data
+    cov_raw: np.ndarray | None = None
 
     @property
     def shape(self) -> tuple[int, ...]:
@@ -443,11 +553,16 @@ def _prepare(df: pd.DataFrame, value: str, factors: Any, covariates: Any,
         codes.append(c)
         levels.append(lv)
     codes_arr = np.column_stack(codes)
-    y = y[ok]
-    cov = np.column_stack([a[ok] for a in cov_arrays]) if cov_arrays else np.empty((y.size, 0))
+    y_raw = y[ok]
+    cov_raw = np.column_stack([a[ok] for a in cov_arrays]) if cov_arrays else np.empty((y_raw.size, 0))
     for j, c in enumerate(covariates):
-        if is_constant(cov[:, j]):
+        if _no_variation(cov_raw[:, j]):
             raise StatsError(f"Covariate '{c}' has the same value in every row, so it cannot be used.")
+    # Work in rescaled units (exact division by a power of two): the analysis is unit-free.
+    unit = _unit_scale(y_raw)
+    y = y_raw / unit
+    cov_units = [_unit_scale(cov_raw[:, j]) for j in range(len(covariates))]
+    cov = cov_raw / np.asarray(cov_units, dtype=float) if covariates else cov_raw
 
     labels = [str((factor_labels or {}).get(f, f)) for f in factors]
     if len(set(labels)) != len(labels):
@@ -460,7 +575,8 @@ def _prepare(df: pd.DataFrame, value: str, factors: Any, covariates: Any,
         work[f"c{j}"] = cov[:, j]
 
     design = _Design(work=work, value=value, factors=factors, labels=labels, levels=levels,
-                     covariates=covariates, codes=codes_arr, y=y, cov=cov, notes=notes)
+                     covariates=covariates, codes=codes_arr, y=y, cov=cov, notes=notes,
+                     unit=unit, cov_units=cov_units, y_raw=y_raw, cov_raw=cov_raw)
     counts = design.cell_n
     if (counts == 0).any():
         empty = [design.cell_name(cell) for cell, n in zip(design.cells, counts) if n == 0]
@@ -607,7 +723,8 @@ def _term_rows(design: _Design, fit: _Fit, level: float = 0.95) -> tuple[list[di
             p = float(stats.f.sf(f, df, fit.df_resid))
         peta = ss / (ss + fit.ss_resid) if (ss + fit.ss_resid) > 0 else None
         rows.append({
-            "source": name, "kind": row_kind, "ss": ss, "df": df, "ms": ms, "f": f, "p": p,
+            "source": name, "kind": row_kind, "ss": _to_units(ss, design.unit, 2), "df": df,
+            "ms": _to_units(ms, design.unit, 2), "f": f, "p": p,
             "partial_eta_sq": peta,
             "percent_of_variation": 100.0 * ss / fit.ss_total if fit.ss_total > 0 else None,
         })
@@ -620,28 +737,40 @@ def _term_rows(design: _Design, fit: _Fit, level: float = 0.95) -> tuple[list[di
             omega.ci_low, omega.ci_high = _none_if_nan(omega.ci_low), _none_if_nan(omega.ci_high)
             effects.append(omega)
     rows.append({
-        "source": "Residual", "kind": "residual", "ss": fit.ss_resid, "df": fit.df_resid,
-        "ms": fit.mse, "f": None, "p": None, "partial_eta_sq": None,
+        "source": "Residual", "kind": "residual", "ss": _to_units(fit.ss_resid, design.unit, 2),
+        "df": fit.df_resid, "ms": _to_units(fit.mse, design.unit, 2), "f": None, "p": None,
+        "partial_eta_sq": None,
         "percent_of_variation": 100.0 * fit.ss_resid / fit.ss_total if fit.ss_total > 0 else None,
     })
     rows.append({
-        "source": "Total", "kind": "total", "ss": fit.ss_total, "df": fit.n_total - 1,
+        "source": "Total", "kind": "total", "ss": _to_units(fit.ss_total, design.unit, 2),
+        "df": fit.n_total - 1,
         "ms": None, "f": None, "p": None, "partial_eta_sq": None,
         "percent_of_variation": 100.0 if fit.ss_total > 0 else None,
     })
     return rows, effects
 
 
-def _cell_means_cov(design: _Design, fit: _Fit) -> tuple[np.ndarray, np.ndarray]:
-    """Means of every cell and their covariance matrix (already scaled by MS residual).
+def _model_based_means(design: _Design, fit: _Fit) -> bool:
+    """True when the cell means of the fitted model differ from the observed cell means
+    (covariates in the model, or a model without the highest-order interaction)."""
+    return bool(design.covariates) or fit.max_order < len(design.factors)
 
-    Without covariates: observed cell means, covariance MSE * diag(1 / n). With
-    covariates: least-squares (adjusted) means at the covariate means, L b with
-    covariance L Cov(b) L'.
+
+def _cell_means_cov(design: _Design, fit: _Fit) -> tuple[np.ndarray, np.ndarray]:
+    """Least-squares means of every cell under the *fitted* model and their covariance
+    matrix (already scaled by MS residual), in the rescaled units of ``design.y``.
+
+    Full factorial model without covariates: the model reproduces the observed cell
+    means, covariance MSE * diag(1 / n). Otherwise (no interaction term, an interaction
+    dropped because there is one value per cell, or covariates): ``L b`` with covariance
+    ``L Cov(b) L'``, where row ``L`` is the design row of the cell (covariates at their
+    means). Averaging these predictions with equal weights gives the estimated marginal
+    means of the fitted model (Searle, Speed & Milliken 1980).
     """
     index = design.cell_index
     counts = design.cell_n
-    if not design.covariates:
+    if not _model_based_means(design, fit):
         means = np.bincount(index, weights=design.y, minlength=counts.size) / counts
         return means, np.diag(fit.mse / counts)
     exog = np.asarray(fit.result.model.exog, dtype=float)
@@ -748,8 +877,12 @@ def _build_contrasts(design: _Design, target: int | None, cond: tuple[int, ...])
 
 
 def _comparisons(contrasts: list[_Contrast], means: np.ndarray, cov: np.ndarray, mse: float, df: float,
-                 method: str, alpha: float, tukey_k: int) -> list[Comparison]:
-    """Turn contrasts of means into Comparison objects (pooled-error t / Tukey tests)."""
+                 method: str, alpha: float, tukey_k: int, unit: float = 1.0) -> list[Comparison]:
+    """Turn contrasts of means into Comparison objects (pooled-error t / Tukey tests).
+
+    ``means``, ``cov`` and ``mse`` are in rescaled units; estimates, standard errors and
+    confidence limits are multiplied by ``unit`` for reporting.
+    """
     est = np.array([float(c.weights @ means) for c in contrasts])
     se = np.array([math.sqrt(max(float(c.weights @ cov @ c.weights), 0.0)) for c in contrasts])
     t_val = np.full(est.size, np.nan)
@@ -770,9 +903,9 @@ def _comparisons(contrasts: list[_Contrast], means: np.ndarray, cov: np.ndarray,
             stat_name, stat = "q", (abs(float(t_val[i])) * math.sqrt(2.0) if ok else None)
         out.append(Comparison(
             id="", group_a=c.group_a, group_b=c.group_b, label=c.label, cell_a=c.cell_a, cell_b=c.cell_b,
-            estimate=float(est[i]), se=float(se[i]),
-            ci_low=float(est[i] - crit * se[i]) if ok else None,
-            ci_high=float(est[i] + crit * se[i]) if ok else None,
+            estimate=_to_units(est[i], unit), se=_to_units(se[i], unit),
+            ci_low=_to_units(est[i] - crit * se[i], unit) if ok else None,
+            ci_high=_to_units(est[i] + crit * se[i], unit) if ok else None,
             statistic_name=stat_name, statistic=stat, df=float(df),
             p_value=_none_if_nan(p_raw[i]), p_adjusted=_none_if_nan(p_adj[i]),
             effect_size=_hedges_g_pooled(float(est[i]), float(se[i]), mse, df,
@@ -799,6 +932,7 @@ def anova_factorial(
     posthoc_compare: str = "simple_b_within_a",
     covariates: list[str] | None = None,
     factor_labels: dict[str, str] | None = None,
+    value_label: str | None = None,
 ) -> StatResult:
     """Fixed-effects N-way (factorial) ANOVA on long-format data.
 
@@ -823,12 +957,16 @@ def anova_factorial(
           averaged over). Tukey k = number of levels of A, one Tukey family per level
           of B; other methods treat all listed comparisons as one family.
         * ``"simple_b_within_a"``: the same with the roles swapped.
-        * ``"main_a"``, ``"main_b"``...: marginal means of one factor (unweighted
-          averages of the cell means). Tukey k = number of levels of that factor.
+        * ``"main_a"``, ``"main_b"``...: estimated marginal means of one factor (equally
+          weighted averages of the cell means of the fitted model; without an
+          interaction term these are the least-squares means of the additive model).
+          Tukey k = number of levels of that factor.
         * ``"all_cells"``: every cell against every other cell. Tukey k = number of cells.
     covariates : optional continuous covariates (common slopes; makes it an ANCOVA and
         the compared means become covariate-adjusted means).
     factor_labels : optional ``{factor column: readable name}`` used in the output.
+    value_label : optional readable name of the outcome for the text output (default: the
+        name of the ``value`` column).
 
     Comparisons always use the residual mean square and residual df of the fitted
     model (pooled error); see the module docstring for details.
@@ -858,6 +996,9 @@ def anova_factorial(
         )
     fit = _fit(design, ss_type, max_order)
     rows, effects = _term_rows(design, fit)
+    unit = design.unit
+    if any(r["ss"] is None for r in rows):
+        warnings_out.append(_UNITS_WARNING)
 
     if fit.ss_total == 0:
         warnings_out.append("All values are identical: there is no variation to analyse, so no F tests are possible.")
@@ -883,7 +1024,7 @@ def anova_factorial(
             detail="Each value must come from a different, independent subject or sample. If the same "
                    "subjects were measured repeatedly, use a repeated-measures or mixed design instead.",
         ),
-        _normality_check(resid),
+        _normality_check(resid, resolution=_resolution(design.y), negligible=fit.mse <= 0),
         _brown_forsythe({design.cell_name(c): resid[index == i] if design.covariates else design.y[index == i]
                          for i, c in enumerate(cells)}, target="cells"),
     ]
@@ -917,18 +1058,22 @@ def anova_factorial(
         ))
 
     # ---------------------------------------------------------------- descriptives
-    means, cov = _cell_means_cov(design, fit)
+    means, cov = _cell_means_cov(design, fit)  # rescaled units
+    model_based = _model_based_means(design, fit)
     descriptives, cell_means, n_map = [], [], {}
     for i, cell in enumerate(cells):
-        desc = _describe(design.y[index == i])
+        desc = _describe(design.y_raw[index == i])
         name = design.cell_name(cell)
         n_map[name] = desc["n"]
         descriptives.append({**design.cell_dict(cell), "group": name, **desc})
         entry = {**design.cell_dict(cell), "mean": desc["mean"], "sd": desc["sd"], "sem": desc["sem"],
                  "n": desc["n"]}
         if design.covariates:
-            entry["adjusted_mean"] = float(means[i])
-            entry["adjusted_se"] = float(math.sqrt(max(cov[i, i], 0.0)))
+            entry["adjusted_mean"] = _to_units(means[i], unit)
+            entry["adjusted_se"] = _to_units(math.sqrt(max(cov[i, i], 0.0)), unit)
+        elif model_based:  # least-squares mean of the cell under the model without the interaction
+            entry["ls_mean"] = _to_units(means[i], unit)
+            entry["ls_se"] = _to_units(math.sqrt(max(cov[i, i], 0.0)), unit)
         cell_means.append(entry)
     t_crit = float(stats.t.ppf(1 - alpha / 2, fit.df_resid))
     marginal = []
@@ -940,9 +1085,10 @@ def anova_factorial(
             se = math.sqrt(max(float(w @ cov @ w), 0.0))
             obs = design.y[design.codes[:, fi] == lv]
             marginal.append({
-                "factor": design.factors[fi], "level": lv_name, "mean": est, "se": se,
-                "ci_low": est - t_crit * se, "ci_high": est + t_crit * se,
-                "n": int(obs.size), "observed_mean": float(obs.mean()),
+                "factor": design.factors[fi], "level": lv_name,
+                "mean": _to_units(est, unit), "se": _to_units(se, unit),
+                "ci_low": _to_units(est - t_crit * se, unit), "ci_high": _to_units(est + t_crit * se, unit),
+                "n": int(obs.size), "observed_mean": _to_units(float(obs.mean()), unit),
             })
 
     # ---------------------------------------------------------------- post hoc tests
@@ -954,7 +1100,7 @@ def anova_factorial(
             warnings_out.append("Multiple comparisons were skipped because the residual variation is zero.")
         else:
             contrasts, k, family_text = _build_contrasts(design, target, cond)
-            comparisons = _comparisons(contrasts, means, cov, fit.mse, fit.df_resid, method, alpha, k)
+            comparisons = _comparisons(contrasts, means, cov, fit.mse, fit.df_resid, method, alpha, k, unit)
             correction = _posthoc_label(method, balanced)
             n_fam = len({c.family for c in contrasts})
             if method == "tukey":
@@ -964,12 +1110,21 @@ def anova_factorial(
                 )
             elif method != "none":
                 family_text += f"; all {len(contrasts)} treated as one family"
-            family_text += f". Pooled error: MS residual = {fmt(fit.mse)} with {fit.df_resid} df."
-            extra["comparisons_note"] = (
-                _ci_note(method) + " Means compared: "
-                + ("covariate-adjusted (least-squares) means." if design.covariates
-                   else "observed cell means (marginal means are unweighted averages of cell means).")
-            )
+            family_text += (f". Pooled error: MS residual = {fmt(_to_units(fit.mse, unit, 2))} "
+                            f"with {fit.df_resid} df.")
+            if design.covariates:
+                means_note = "covariate-adjusted (least-squares) means."
+            elif model_based:
+                means_note = (
+                    "least-squares (estimated marginal) means of the fitted model, which has no "
+                    + (f"{dropped_term} " if dropped_term else "")
+                    + "interaction term (cell means predicted by the model; marginal means are equally "
+                      "weighted averages of those predictions). With unequal cell sizes they differ from the "
+                      "averages of the observed cell means."
+                )
+            else:
+                means_note = "observed cell means (marginal means are unweighted averages of cell means)."
+            extra["comparisons_note"] = _ci_note(method) + " Means compared: " + means_note
             extra["tukey_k"] = k if method == "tukey" else None
 
     # ---------------------------------------------------------------- headline + text
@@ -979,7 +1134,7 @@ def anova_factorial(
     test_name = f"{way} ANOVA" if not design.covariates else f"{way} ANCOVA"
     type_text = f"Type {'III' if ss_type == 3 else 'II'} sums of squares"
     sentences = [
-        f"{test_name} of {design.value} by {' and '.join(design.labels)} "
+        f"{test_name} of {value_label or design.value} by {' and '.join(design.labels)} "
         f"({fit.n_total} values, {type_text})."
     ]
     for r in reversed(term_rows) if max_order >= 2 else term_rows:
@@ -1029,16 +1184,23 @@ def anova_factorial(
         "factor_labels": dict(zip(design.factors, design.labels)),
         "levels": {f: list(lv) for f, lv in zip(design.factors, design.levels)},
         "marginal_means": marginal,
+        "marginal_means_note": (
+            "Estimated marginal means of the fitted model"
+            + (" (covariate-adjusted)" if design.covariates
+               else (" (least-squares means of the model without the interaction)" if model_based
+                     else " (unweighted averages of the observed cell means)")) + "."
+        ),
         "ss_type": ss_type,
         "balanced": balanced,
         "interaction_in_model": max_order >= 2,
         "dropped_term": dropped_term,
         "headline_term": headline["source"],
-        "residuals": {"fitted": [float(v) for v in np.asarray(fit.result.fittedvalues)],
-                      "residual": [float(v) for v in resid]},
+        "residuals": {"fitted": [_to_units(v, unit) for v in np.asarray(fit.result.fittedvalues)],
+                      "residual": [_to_units(v, unit) for v in resid]},
     })
     if design.covariates:
-        extra["covariate_means"] = {c: float(design.cov[:, j].mean()) for j, c in enumerate(design.covariates)}
+        extra["covariate_means"] = {c: float(design.cov_raw[:, j].mean())
+                                    for j, c in enumerate(design.covariates)}
 
     parameters = []
     if design.covariates:
@@ -1087,7 +1249,8 @@ def _slope_parameters(design: _Design, fit: _Fit, alpha: float) -> list[Paramete
     out = []
     for j, cname in enumerate(design.covariates):
         i = names.index(f"c{j}")
-        b, se = float(beta[i]), math.sqrt(max(float(cov_beta[i, i]), 0.0))
+        back = design.unit / design.cov_units[j]  # slope in data units per covariate unit
+        b, se = float(beta[i]) * back, math.sqrt(max(float(cov_beta[i, i]), 0.0)) * back
         t = b / se if se > 0 else None
         out.append(Parameter(
             name=f"Slope: {cname}", value=b, se=se,
@@ -1138,9 +1301,12 @@ def ancova(
     k = len(levels)
     fit = _fit(design, ss_type, 1)
     rows, effects = _term_rows(design, fit)
-    means, cov = _cell_means_cov(design, fit)
+    means, cov = _cell_means_cov(design, fit)  # rescaled units
+    unit = design.unit
     codes = design.codes[:, 0]
     warnings_out: list[str] = []
+    if any(r["ss"] is None for r in rows):
+        warnings_out.append(_UNITS_WARNING)
     if fit.ss_total == 0:
         warnings_out.append("All values are identical: there is no variation to analyse.")
     elif fit.mse <= 0:
@@ -1198,7 +1364,7 @@ def ancova(
         detail="ANCOVA assumes a straight-line relationship between each covariate and the outcome within "
                "every group. Check a scatter plot of the outcome against the covariate.",
     ))
-    assumptions.append(_normality_check(resid))
+    assumptions.append(_normality_check(resid, resolution=_resolution(design.y), negligible=fit.mse <= 0))
     assumptions.append(_brown_forsythe({lv: resid[codes == i] for i, lv in enumerate(levels)},
                                        target="residuals by group"))
     for j, cname in enumerate(cov_list):
@@ -1223,17 +1389,19 @@ def ancova(
     t_crit = float(stats.t.ppf(1 - alpha / 2, fit.df_resid))
     descriptives, adjusted, cell_means, n_map = [], [], [], {}
     for i, lv in enumerate(levels):
-        desc = _describe(design.y[codes == i])
+        desc = _describe(design.y_raw[codes == i])
         n_map[lv] = desc["n"]
-        se = math.sqrt(max(float(cov[i, i]), 0.0))
-        cov_means = {f"mean_{c}": float(design.cov[codes == i, j].mean()) for j, c in enumerate(cov_list)}
-        descriptives.append({"group": lv, **desc, "adjusted_mean": float(means[i]), **cov_means})
+        se_scaled = math.sqrt(max(float(cov[i, i]), 0.0))
+        adj, se = _to_units(means[i], unit), _to_units(se_scaled, unit)
+        cov_means = {f"mean_{c}": float(design.cov_raw[codes == i, j].mean()) for j, c in enumerate(cov_list)}
+        descriptives.append({"group": lv, **desc, "adjusted_mean": adj, **cov_means})
         adjusted.append({
-            "group": lv, "n": desc["n"], "mean": desc["mean"], "adjusted_mean": float(means[i]), "se": se,
-            "ci_low": float(means[i] - t_crit * se), "ci_high": float(means[i] + t_crit * se),
+            "group": lv, "n": desc["n"], "mean": desc["mean"], "adjusted_mean": adj, "se": se,
+            "ci_low": _to_units(means[i] - t_crit * se_scaled, unit),
+            "ci_high": _to_units(means[i] + t_crit * se_scaled, unit),
         })
         cell_means.append({design.factors[0]: lv, "mean": desc["mean"], "sd": desc["sd"], "sem": desc["sem"],
-                           "n": desc["n"], "adjusted_mean": float(means[i]), "adjusted_se": se})
+                           "n": desc["n"], "adjusted_mean": adj, "adjusted_se": se})
 
     # ------------------------------------------------ pairwise comparisons
     comparisons: list[Comparison] = []
@@ -1246,11 +1414,11 @@ def ancova(
             contrasts, _, _ = _build_contrasts(design, 0, ())
             for c in contrasts:
                 c.label = None
-            comparisons = _comparisons(contrasts, means, cov, fit.mse, fit.df_resid, method, alpha, k)
+            comparisons = _comparisons(contrasts, means, cov, fit.mse, fit.df_resid, method, alpha, k, unit)
             correction = "Tukey-Kramer (approximate for adjusted means)" if method == "tukey" else METHOD_LABELS[method]
             family_text = (
                 f"all {len(comparisons)} pairwise comparisons among the {k} covariate-adjusted group means "
-                f"(pooled error: MS residual = {fmt(fit.mse)} with {fit.df_resid} df)"
+                f"(pooled error: MS residual = {fmt(_to_units(fit.mse, unit, 2))} with {fit.df_resid} df)"
             )
             extra["comparisons_note"] = _ci_note(method) + (
                 " The Tukey-Kramer adjustment of adjusted means is exact only when the covariate means "
@@ -1291,22 +1459,22 @@ def ancova(
     )
     extra.update({
         "adjusted_means": adjusted,
-        "covariate_means": {c: float(design.cov[:, j].mean()) for j, c in enumerate(cov_list)},
+        "covariate_means": {c: float(design.cov_raw[:, j].mean()) for j, c in enumerate(cov_list)},
         "cell_means": cell_means,
         "factors": list(design.factors),
         "factor_labels": dict(zip(design.factors, design.labels)),
         "covariates": cov_list,
         "ss_type": ss_type,
-        "residuals": {"fitted": [float(v) for v in np.asarray(fit.result.fittedvalues)],
-                      "residual": [float(v) for v in resid]},
+        "residuals": {"fitted": [_to_units(v, unit) for v in np.asarray(fit.result.fittedvalues)],
+                      "residual": [_to_units(v, unit) for v in resid]},
     })
     if len(cov_list) == 1:
         slope = float(parameters[0].value)
-        x_mean = float(design.cov[:, 0].mean())
+        x_mean = float(design.cov_raw[:, 0].mean())
         extra["group_lines"] = {
-            lv: {"slope": slope, "intercept": float(means[i] - slope * x_mean),
-                 "x": [float(v) for v in design.cov[codes == i, 0]],
-                 "y": [float(v) for v in design.y[codes == i]]}
+            lv: {"slope": slope, "intercept": float(adjusted[i]["adjusted_mean"] - slope * x_mean),
+                 "x": [float(v) for v in design.cov_raw[codes == i, 0]],
+                 "y": [float(v) for v in design.y_raw[codes == i]]}
             for i, lv in enumerate(levels)
         }
     citations = [_CITE_ANCOVA, _CITE_ANOVA, _CITE_SW, _CITE_BF]
@@ -1425,7 +1593,7 @@ def _run_anova_twoway(table: Any, value: str | None = None, factor_a: str | None
             labels = {"row": f"{table.row_label} (rows)", "column": f"{table.column_label} (columns)"}
         result = anova_factorial(long, "value", ["row", "column"], ss_type=ss_type, interactions=bool(interaction),
                                  alpha=alpha, posthoc=posthoc, posthoc_compare=posthoc_compare,
-                                 factor_labels=labels)
+                                 factor_labels=labels, value_label="the measured values")
         result.data_notes.insert(0, f"Factor A = rows ({table.row_label}); factor B = column groups "
                                     f"({table.column_label}); each replicate is an independent value.")
         return result

@@ -16,8 +16,16 @@ Notes on rigor
 --------------
 * Normality tests have little power with small samples and too much with huge ones;
   the explanation says so whenever n is small, instead of pretending the check is decisive.
-* With very small groups a rank test cannot reach significance at all (e.g. a
-  two-sided Mann-Whitney test with n = 3 vs 3 has a minimum P of 0.10); this is flagged.
+* With very small groups a rank test cannot reach significance at all. The smallest
+  two-sided exact P value of the Mann-Whitney test is 2 / C(n1 + n2, n1) (complete
+  separation of the groups: 0.10 for 3 vs 3, 0.057 for 3 vs 4) and that of the Wilcoxon
+  signed-rank test is 2 / 2^n (0.0625 for 5 pairs); whenever that minimum is not below
+  0.05 the recommendation says so.
+* Columns are recognised by whole words in their names (never by substrings: "Exposure"
+  is not an "exp" replicate column) and, above all, by the structure of the data: a
+  replicate column must hold several rows per group, a subject column exactly one row per
+  repeated level. Repeated measurements are never recommended a factorial ANOVA that
+  would treat the subject identifier as a fixed factor.
 * Choosing between Student's and Welch's t test from a variance pre-test is the
   conventional path and is what is recommended here; Welch's test is always listed as the
   safe alternative because it does not need the equal-variance assumption
@@ -27,10 +35,12 @@ Notes on rigor
 from __future__ import annotations
 
 import math
+import re
 import warnings
 from typing import Any
 
 import numpy as np
+import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field
 from scipy import stats
 
@@ -43,6 +53,7 @@ from ..data.tables import (
     XYTable,
 )
 from ._utils import StatsError, fmt
+from .factorial import _no_variation, _unit_scale
 from .result import AssumptionCheck
 
 ALPHA_CHECK = 0.05
@@ -91,12 +102,12 @@ def _shapiro(values: np.ndarray, target: str) -> AssumptionCheck:
     if v.size < 3:
         return AssumptionCheck(name=name, target=target, status="warn",
                                detail=f"Only {v.size} value(s): normality cannot be tested.")
-    if np.ptp(v) == 0:
+    if _no_variation(v):
         return AssumptionCheck(name=name, target=target, status="warn",
                                detail="All values are identical: normality cannot be tested.")
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        w, p = stats.shapiro(v)
+        w, p = stats.shapiro(v / _unit_scale(v))  # exact rescaling: the check is unit-free
     if p < ALPHA_CHECK:
         return AssumptionCheck(name=name, target=target, statistic=w, p_value=p, status="fail",
                                detail=f"The values depart from a normal distribution (P = {fmt(p, 3)}).")
@@ -111,8 +122,10 @@ def _brown_forsythe(groups: dict[str, np.ndarray]) -> AssumptionCheck:
     usable = [g for g in groups.values() if g.size >= 2]
     if len(usable) < 2 or len(usable) < len(groups):
         return AssumptionCheck(name=name, status="warn", detail="Needs at least 2 values in every group.")
-    if all(np.ptp(g) == 0 for g in usable):
+    if all(_no_variation(g) for g in usable):
         return AssumptionCheck(name=name, status="warn", detail="No variability within the groups.")
+    unit = _unit_scale(np.concatenate(usable))  # exact common rescaling: the test is unit-free
+    usable = [g / unit for g in usable]
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         stat, p = stats.levene(*usable, center="median")
@@ -138,6 +151,36 @@ def _small_n_note(ns: list[int]) -> str | None:
             "reliably; rely on what is known about this kind of measurement and report individual points."
         )
     return None
+
+
+def _mann_whitney_min_p(n1: int, n2: int) -> float:
+    """Smallest attainable two-sided exact P of the Mann-Whitney test: the two groups do
+    not overlap at all, which has probability 2 / C(n1 + n2, n1) under the null hypothesis."""
+    return min(1.0, 2.0 / math.comb(n1 + n2, n1))
+
+
+def _signed_rank_min_p(n: int) -> float:
+    """Smallest attainable two-sided exact P of the Wilcoxon signed-rank test: all n
+    differences have the same sign, probability 2 / 2^n under the null hypothesis."""
+    return min(1.0, 2.0 / 2.0**n)
+
+
+def _mann_whitney_power_note(n1: int, n2: int) -> str | None:
+    p_min = _mann_whitney_min_p(n1, n2)
+    if p_min < ALPHA_CHECK:
+        return None
+    sizes = f"n = {n1} per group" if n1 == n2 else f"n = {n1} and {n2}"
+    return (f"With {sizes} a two-sided Mann-Whitney test cannot give P < 0.05: even when the two groups "
+            f"do not overlap at all the exact P value is {fmt(p_min, 3)}. The test is recommended for "
+            "validity, but it has no power here; collect more data if you can.")
+
+
+def _signed_rank_power_note(n: int, what: str = "pairs") -> str | None:
+    p_min = _signed_rank_min_p(n)
+    if p_min < ALPHA_CHECK:
+        return None
+    return (f"With {n} {what} the Wilcoxon test cannot give a two-sided P below 0.05 "
+            f"(the smallest possible P is {fmt(p_min, 3)}; at least 6 {what} are needed).")
 
 
 # ---------------------------------------------------------------------- per table
@@ -171,12 +214,13 @@ def _recommend_column(table: ColumnTable, paired: bool | None, control: str | No
                                           when="if the values are clearly not normal (skewed, outliers)", params={"group": names[0]}),
                               Alternative(analysis="descriptives", label="Descriptive statistics", when="to summarise the group")],
             )
+        one_note = _signed_rank_power_note(ns[0], "values")
         return Recommendation(
             analysis="wilcoxon_one_sample", label="Wilcoxon signed-rank test (one sample)", params={"group": names[0]},
             reason="There is one group and its values are not normally distributed, so the median is compared "
                    "with a hypothetical value using the rank-based Wilcoxon signed-rank test.",
             steps=["One group of values: compare it with a hypothetical value.", check.detail],
-            checks=[check], design=design, cautions=cautions,
+            checks=[check], design=design, cautions=cautions + ([one_note] if one_note else []),
             alternatives=[Alternative(analysis="ttest_one_sample", label="One-sample t test",
                                       when="if you have reason to believe the population is normal", params={"group": names[0]})],
         )
@@ -203,10 +247,8 @@ def _recommend_column(table: ColumnTable, paired: bool | None, control: str | No
                     alternatives=[Alternative(analysis="wilcoxon_signed_rank", label="Wilcoxon matched-pairs signed-rank test",
                                               when="if the differences are skewed or contain outliers", params=pair)],
                 )
-            extra = []
-            if diff.size < 6:
-                extra.append(f"With {diff.size} pairs the Wilcoxon test cannot give a two-sided P below 0.05 "
-                             "(at least 6 pairs are needed).")
+            pair_note = _signed_rank_power_note(int(diff.size))
+            extra = [pair_note] if pair_note else []
             return Recommendation(
                 analysis="wilcoxon_signed_rank", label="Wilcoxon matched-pairs signed-rank test", params=pair,
                 reason="The data are paired but the differences between pairs are not normally distributed, so "
@@ -224,10 +266,8 @@ def _recommend_column(table: ColumnTable, paired: bool | None, control: str | No
             cautions.append("If each row is the same subject measured twice, the data are paired: "
                             "ask for the recommendation again with 'paired' switched on.")
         if not _normal(norm):
-            extra = []
-            if max(ns) <= 3:
-                extra.append("With n = 3 or fewer per group a two-sided Mann-Whitney test cannot give P < 0.05; "
-                             "the test is recommended for validity, but it has no power here.")
+            mw_note = _mann_whitney_power_note(ns[0], ns[1])
+            extra = [mw_note] if mw_note else []
             return Recommendation(
                 analysis="mann_whitney", label="Mann-Whitney test", params=pair,
                 reason="The two groups are independent and at least one of them is not normally distributed, so "
@@ -256,7 +296,11 @@ def _recommend_column(table: ColumnTable, paired: bool | None, control: str | No
             alternatives=[Alternative(analysis="ttest_welch", label="Welch's t test",
                                       when="a safe default that does not need equal variances; many statisticians prefer it routinely", params=pair),
                           Alternative(analysis="mann_whitney", label="Mann-Whitney test",
-                                      when="if you doubt normality and cannot verify it", params=pair)],
+                                      when="if you doubt normality and cannot verify it"
+                                           + ("" if _mann_whitney_min_p(ns[0], ns[1]) < ALPHA_CHECK else
+                                              f" (but with these group sizes it cannot give P < 0.05: its "
+                                              f"smallest possible P is {fmt(_mann_whitney_min_p(ns[0], ns[1]), 3)})"),
+                                      params=pair)],
         )
 
     # three or more groups
@@ -400,26 +444,46 @@ def _recommend_xy(table: XYTable, goal: str | None) -> Recommendation:
     positive = ux[ux > 0]
     wide = positive.size >= 4 and positive.max() / positive.min() >= 100
     log_like = np.all(ux > -15) and np.all(ux < 3) and ux.size >= 5 and "log" in table.x_name.lower()
+    x_already_log = bool(log_like and not wide)
+    if x_already_log:
+        # X is log10(dose): one unit of X is one decade of dose, so the span is max - min
+        decades = float(ux.max() - ux.min())
+    else:
+        decades = float(np.log10(positive.max() / positive.min())) if positive.size > 1 else 0.0
     design = {"table": "xy", "series": len(table.series_names), "points": int(x.size), "x_levels": int(ux.size),
-              "x_spans_decades": float(np.log10(positive.max() / positive.min())) if positive.size > 1 else 0.0}
+              "x_spans_decades": decades, "x_is_log10": x_already_log}
     dose = goal == "dose_response" or (goal is None and (wide or log_like))
     alt_lin = Alternative(analysis="linear_regression", label="Simple linear regression",
                           when="if Y changes in a straight line with X", params={"series": name})
     alt_corr = Alternative(analysis="correlation", label="Correlation (Pearson or Spearman)",
                            when="if you only want to know how strongly X and Y go together", params={"series": name})
     if dose:
-        model = "dose_response_4pl_logx" if log_like and not wide else "dose_response_4pl"
+        model = "dose_response_4pl_logx" if x_already_log else "dose_response_4pl"
         cautions = []
+        if x_already_log:
+            span_step = (f"X is already on a log10 scale ('{table.x_name}' runs from {fmt(float(ux.min()), 3)} to "
+                         f"{fmt(float(ux.max()), 3)}), so the doses span about {fmt(decades, 2)} decades "
+                         "(orders of magnitude): dose-like.")
+        elif positive.size > 1:
+            span_step = (f"X values span about {fmt(decades, 2)} decades (orders of magnitude; from "
+                         f"{fmt(float(positive.min()), 3)} to {fmt(float(positive.max()), 3)}): dose-like.")
+        else:
+            span_step = "X was analysed as a dose (concentration) series, as you asked."
+        if wide or log_like:
+            why_dose = ("X covers several orders of magnitude, which is typical of a dose or concentration "
+                        "series. ")
+        else:
+            why_dose = "You asked for a dose-response analysis. "
         if ux.size < 5:
             cautions.append(f"Only {ux.size} dose levels: a four-parameter curve needs at least 5 to be well defined; "
                             "consider fixing Top/Bottom or using the three-parameter model.")
         return Recommendation(
             analysis="nonlinear_regression", label="Nonlinear regression: four-parameter dose-response (EC50/IC50)",
             params={"series": name, "model": model},
-            reason="X covers several orders of magnitude, which is typical of a dose or concentration series. "
-                   "A four-parameter logistic (sigmoidal) curve estimates the top and bottom plateaus, the "
-                   "EC50/IC50 and the Hill slope with confidence intervals.",
-            steps=[f"X values span about {fmt(design['x_spans_decades'], 2)} decades (dose-like).",
+            reason=why_dose
+                   + "A four-parameter logistic (sigmoidal) curve estimates the top and bottom plateaus, the "
+                     "EC50/IC50 and the Hill slope with confidence intervals.",
+            steps=[span_step,
                    "Individual replicates are fitted (not just the means) so the uncertainty is honest."],
             design=design, cautions=cautions,
             alternatives=[Alternative(analysis="nonlinear_regression", label="Three-parameter dose-response (Hill slope fixed at 1)",
@@ -465,13 +529,40 @@ def _recommend_contingency(table: ContingencyTable) -> Recommendation:
             alternatives=[Alternative(analysis="chi_square", label="Chi-square test",
                                       when="with large counts (all expected counts at least 5); gives almost the same answer")],
         )
-    cautions = ["Some expected counts are small, so the chi-square approximation may be inaccurate; consider "
-                "merging sparse categories."] if check.status == "fail" else []
+    trend_alt = [Alternative(
+        analysis="chi_square_trend", label="Chi-square test for trend",
+        when="if the categories of the longer side are ordered (doses, stages) and you want to know whether "
+             "the proportion rises or falls steadily",
+    )] if 2 in (r, c) else []
+    if check.status == "fail":
+        # Cochran's rule fails: the chi-square approximation is not trustworthy, and the exact
+        # (Fisher-Freeman-Halton) test is available for r x c tables.
+        return Recommendation(
+            analysis="fisher_exact", label=f"Fisher's exact test ({r} x {c} table, Fisher-Freeman-Halton)",
+            params={},
+            reason=f"The table has {r} rows and {c} columns of counts, but too many expected counts are small "
+                   "for the chi-square approximation (Cochran's rule: no expected count below 1 and at most "
+                   "20% below 5). Fisher's exact test, in its extension to larger tables, gives a P value "
+                   "that is valid whatever the counts.",
+            steps=[f"Counts in a {r} x {c} table.", check.detail,
+                   "Cochran's rule fails, so an exact test is used instead of the chi-square approximation."],
+            checks=[check], design=design,
+            cautions=["Some expected counts are small, so the chi-square approximation may be inaccurate; "
+                      "the exact test avoids it. Merging sparse categories is another option if it makes "
+                      "scientific sense.",
+                      "For large tables the exact P value is estimated by simulation (the result says so)."],
+            alternatives=[Alternative(analysis="chi_square", label="Chi-square test of independence",
+                                      when="only after merging sparse categories so that the expected counts "
+                                           "are large enough"), *trend_alt],
+        )
     return Recommendation(
         analysis="chi_square", label="Chi-square test of independence", params={},
         reason=f"The table has {r} rows and {c} columns of counts. The chi-square test asks whether the "
                "distribution across columns differs between rows.",
-        steps=[f"Counts in a {r} x {c} table.", check.detail], checks=[check], design=design, cautions=cautions,
+        steps=[f"Counts in a {r} x {c} table.", check.detail], checks=[check], design=design, cautions=[],
+        alternatives=[Alternative(analysis="fisher_exact", label="Fisher's exact test (r x c)",
+                                  when="if you prefer an exact P value (it matters when counts are small)"),
+                      *trend_alt],
     )
 
 
@@ -480,6 +571,264 @@ def _find(columns: list[str], *words: str) -> str | None:
         low = col.lower()
         if any(w in low for w in words):
             return col
+    return None
+
+
+# Whole-word name hints for a column that identifies the experimental UNIT (never matched as
+# substrings: "Exposure", "Expression", "Runtime" or "Acid" are ordinary factors). A name is
+# only a hint; what the column is used for is decided from the structure of the data.
+_REPLICATE_TOKENS = frozenset({
+    "replicate", "replicates", "rep", "reps", "biorep", "bioreps", "experiment", "experiments",
+    "expt", "exp", "batch", "batches", "run", "runs", "plate", "plates", "donor", "donors",
+    "litter", "litters", "culture", "cultures", "prep", "preps", "preparation",
+})
+_SUBJECT_TOKENS = frozenset({
+    "subject", "subjects", "subj", "id", "ids", "animal", "animals", "mouse", "mice", "rat", "rats",
+    "patient", "patients", "participant", "participants", "individual", "volunteer", "person",
+})
+_UNIT_TOKENS = _REPLICATE_TOKENS | _SUBJECT_TOKENS
+
+
+def _name_tokens(name: str) -> set[str]:
+    """Lower-case words of a column name ('Mouse_ID' / 'MouseID' -> {'mouse', 'id'})."""
+    spaced = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", str(name))
+    return set(re.findall(r"[a-z]+|[0-9]+", spaced.lower()))
+
+
+def _is_unit_name(name: str) -> bool:
+    tokens = _name_tokens(name)
+    if tokens & _UNIT_TOKENS:
+        return True
+    # 'subjectid', 'mouseid': a unit word directly followed by 'id'
+    return any(t.endswith("id") and t[:-2] in _UNIT_TOKENS for t in tokens)
+
+
+def _integer_like(series: pd.Series) -> bool:
+    values = pd.to_numeric(series, errors="coerce").dropna().to_numpy(dtype=float)
+    return bool(values.size) and bool(np.all(values == np.round(values)))
+
+
+def _unit_structure(frame: pd.DataFrame, unit: str, factors: list[str], value: str) -> dict[str, Any] | None:
+    """How the rows are arranged with respect to a candidate unit column.
+
+    Returns ``None`` when nothing can be said (no complete rows, a single unit). Otherwise:
+    ``within`` = factors that change inside a unit (at least half of the units see two or more
+    levels), ``between`` = factors that are constant inside every unit, ``other`` = the rest,
+    ``rows_per_cell`` = (median, max) number of rows per unit x within-level combination and
+    ``n_units``.
+    """
+    work = frame[[unit, *factors, value]].dropna()
+    if work.empty:
+        return None
+    n_units = int(work[unit].nunique())
+    if n_units < 2:
+        return None
+    within, between, other = [], [], []
+    for f in factors:
+        per_unit = work.groupby(unit, observed=True)[f].nunique()
+        if bool((per_unit == 1).all()):
+            between.append(f)
+        elif float((per_unit >= 2).mean()) >= 0.5:
+            within.append(f)
+        else:
+            other.append(f)
+    cells = work.groupby([unit, *within], observed=True).size()
+    return {"within": within, "between": between, "other": other, "n_units": n_units,
+            "rows_per_cell": (float(cells.median()), int(cells.max())), "rows": int(len(work))}
+
+
+def _unit_design(table: MultipleVariablesTable, goal: str | None) -> dict[str, Any] | None:
+    """Find a column that identifies the experimental unit (subject, animal, experiment) and
+    classify the design from the structure of the data.
+
+    ``kind`` is one of
+
+    * ``"nested"``: several rows per unit (and per condition): technical replicates inside
+      biological replicates;
+    * ``"mixed"``: one row per unit x level of one factor, units nested in another factor;
+    * ``"rm_oneway"``: one row per unit x level of the only factor that varies in a unit;
+    * ``"rm_twoway"``: one row per unit x combination of two factors;
+    * ``"rm_unsupported"``: repeated measures in a layout no registered analysis covers;
+    * ``"id_only"``: one row per unit and nothing varies inside a unit: the column is just a
+      row label and must not be used as a factor.
+    """
+    frame = table.frame(dropna=False)
+    cats, numeric = list(table.categorical_columns), list(table.numeric_columns)
+    named = [c for c in table.data.columns
+             if _is_unit_name(c) and (c in cats or (_integer_like(frame[c]) and len(numeric) >= 2))]
+    candidates = [(c, True) for c in named]
+    if not candidates and len(cats) >= 3:
+        # no telling name: a text column can still be recognised by structure alone, but only in
+        # the unmistakable split-plot layout (see below)
+        candidates = [(c, False) for c in sorted(cats, key=lambda c: -frame[c].nunique())]
+    for unit, by_name in candidates:
+        outcomes = [c for c in numeric if c != unit]
+        if not outcomes:
+            continue
+        # numeric columns with a few repeated levels (time points, doses) may be factors, as
+        # long as another numeric column is left to be the outcome
+        discrete = [c for c in outcomes
+                    if 2 <= frame[c].nunique() <= 12 and frame[c].nunique() * 2 <= frame[c].notna().sum()]
+        if len(discrete) == len(outcomes):
+            # every numeric column has few levels: keep the richest one as the outcome
+            keep = max(reversed(discrete), key=lambda c: frame[c].nunique())
+            discrete = [c for c in discrete if c != keep]
+        value_pool = [c for c in outcomes if c not in discrete]
+        factor_numeric = discrete
+        # the outcome of a repeated / replicated design varies inside a unit; a numeric column that
+        # is constant within every unit (age, body weight at entry) is a subject attribute
+        varying = [c for c in value_pool
+                   if float((frame.groupby(unit, observed=True)[c].nunique() >= 2).mean()) >= 0.5]
+        value = (varying or value_pool)[0]
+        factors = [c for c in cats if c != unit]
+        info = _unit_structure(frame, unit, factors + factor_numeric, value)
+        if info is None:
+            continue
+        # a numeric column only counts as a factor when it is a repeated (within-unit) level
+        numeric_within = [f for f in info["within"] if f in factor_numeric]
+        if len(numeric_within) != len(factor_numeric):
+            info = _unit_structure(frame, unit, factors + numeric_within, value)
+            if info is None:
+                continue
+        within, between = info["within"], info["between"]
+        median_rows, max_rows = info["rows_per_cell"]
+        out = {"unit": unit, "by_name": by_name, "value": value, **info}
+        if not by_name:
+            # structure-only detection: units nested in one factor, crossed with exactly one
+            # other, one value per unit x level, and at least two units per group
+            groups = frame[between[0]].nunique() if between else 0
+            if (len(within) == 1 and len(between) >= 1 and not info["other"] and max_rows == 1
+                    and info["n_units"] >= 2 * groups):
+                return {**out, "kind": "mixed"}
+            continue
+        if goal == "nested":
+            if within or between:
+                return {**out, "kind": "nested"}
+            continue
+        if within and median_rows < 2:
+            # (typically) one value per unit and repeated level: repeated measures
+            if info["other"] or len(within) > 2 or (len(within) == 2 and between):
+                return {**out, "kind": "rm_unsupported"}
+            if len(within) == 2:
+                return {**out, "kind": "rm_twoway"}
+            return {**out, "kind": "mixed" if between else "rm_oneway"}
+        if median_rows >= 2 and (within or between):
+            return {**out, "kind": "nested"}
+        if not within and median_rows < 2:
+            return {**out, "kind": "id_only"}
+    return None
+
+
+def _recommend_units(found: dict[str, Any], design: dict[str, Any]) -> Recommendation | None:
+    """Recommendation for a design with an identified unit column (``None`` = not handled)."""
+    unit, value, within, between = found["unit"], found["value"], found["within"], found["between"]
+    how = ("its name" if found["by_name"] else "the layout of the data (each of its levels belongs to one "
+           "group and has exactly one value per repeated level)")
+    design = {**design, "unit_column": unit, "unit_design": found["kind"], "within": within,
+              "between": between, "units": found["n_units"]}
+    kind = found["kind"]
+    duplicates = ([f"Some levels of '{unit}' have more than one value at the same repeated level. Each subject "
+                   "must contribute exactly one value per level: average or remove the duplicates first (the "
+                   "analysis will say which subject is affected)."]
+                  if kind in {"mixed", "rm_twoway"} and found["rows_per_cell"][1] > 1 else [])
+    if kind == "nested":
+        group = (within or between)[0]
+        extra_factors = [f for f in (within + between) if f != group]
+        cautions = []
+        if extra_factors:
+            cautions.append(
+                f"This analysis compares the levels of one grouping column ('{group}'). The table also has "
+                f"{', '.join(repr(f) for f in extra_factors)}: analyse one factor at a time, or average the "
+                "technical replicates first and run a two-way ANOVA on the replicate means."
+            )
+        return Recommendation(
+            analysis="nested_analysis", label="Replicate-aware analysis (statistics on biological-replicate means)",
+            params={"value": value, "group": group, "replicate": unit},
+            reason=f"'{unit}' identifies independent biological replicates that each contain several technical "
+                   "measurements. Technical replicates are not independent, so they are averaged within each "
+                   "biological replicate and the test is run on those means (n = number of replicates).",
+            steps=[f"Value: {value}; group: {group}; biological replicate: {unit}.",
+                   f"'{unit}' was recognised by {how}, and there are several rows for each replicate "
+                   f"(typically {found['rows_per_cell'][0]:g} per replicate and group), as expected for "
+                   "technical replicates.",
+                   "Averaging first avoids pseudoreplication, which would make P values far too small."],
+            design=design, cautions=cautions,
+            alternatives=[Alternative(analysis="anova_twoway", label="Two-way ANOVA",
+                                      when=f"if '{unit}' is a real experimental factor, not a replicate")],
+        )
+    if kind == "mixed":
+        b, w = between[0], within[0]
+        cautions = []
+        if len(between) > 1:
+            cautions.append(
+                f"Only one between-subjects factor can be analysed; '{b}' was chosen. The table also has "
+                f"{', '.join(repr(f) for f in between[1:])}."
+            )
+        return Recommendation(
+            analysis="anova_mixed", label="Mixed-design ANOVA (repeated measures by group)",
+            params={"value": value, "subject": unit, "between": b, "within": w},
+            reason=f"Each level of '{unit}' is one subject that belongs to a single group of '{b}' and was "
+                   f"measured once at every level of '{w}'. Repeated measurements of the same subject are not "
+                   "independent, so the subject column must not be used as an ordinary factor: a mixed-design "
+                   f"ANOVA tests '{b}' between subjects, '{w}' within subjects and their interaction, with a "
+                   "sphericity correction.",
+            steps=[f"Value: {value}; subject: {unit}; between-subjects factor: {b}; within-subjects factor: {w}.",
+                   f"'{unit}' was recognised as the subject identifier by {how}: {found['n_units']} subjects, "
+                   f"one value per subject and level of '{w}'."],
+            design=design, cautions=cautions + duplicates,
+            alternatives=[Alternative(analysis="anova_twoway", label="Ordinary two-way ANOVA",
+                                      when="only if every value comes from a different subject (then the "
+                                           "subject column is not needed)",
+                                      params={"value": value, "factor_a": b, "factor_b": w})],
+        )
+    if kind == "rm_twoway":
+        a, b = within
+        return Recommendation(
+            analysis="anova_rm_twoway", label="Two-way repeated-measures ANOVA",
+            params={"value": value, "subject": unit, "within_a": a, "within_b": b},
+            reason=f"Every level of '{unit}' (one subject) was measured once at every combination of '{a}' and "
+                   f"'{b}', so both factors are compared within subjects. Each effect is tested against its own "
+                   "interaction with subjects, with a sphericity correction.",
+            steps=[f"Value: {value}; subject: {unit}; repeated factors: {a} and {b}.",
+                   f"'{unit}' was recognised as the subject identifier by {how}: {found['n_units']} subjects, "
+                   "one value per subject and combination."],
+            design=design, cautions=duplicates,
+        )
+    if kind == "rm_oneway":
+        w = within[0]
+        levels = int(found.get("n_within_levels", 0))
+        return Recommendation(
+            analysis="nested_analysis",
+            label=("Paired t test on matched subjects" if levels == 2
+                   else "Repeated-measures (randomized-block) one-way ANOVA on matched subjects"),
+            params={"value": value, "group": w, "replicate": unit, "paired": "yes"},
+            reason=f"Every level of '{unit}' (one subject) was measured once under each level of '{w}', so the "
+                   "conditions are compared within subjects. The replicate-aware analysis with matched "
+                   "replicates runs exactly that: a paired t test for two conditions, a repeated-measures "
+                   "(randomized-block) one-way ANOVA with paired comparisons for three or more.",
+            steps=[f"Value: {value}; condition: {w}; subject: {unit} (matched across conditions).",
+                   f"'{unit}' was recognised as the subject identifier by {how}: {found['n_units']} subjects, "
+                   f"one value per subject and level of '{w}'."],
+            design=design,
+            cautions=["This blocked ANOVA does not test or correct for sphericity. For Mauchly's test and "
+                      "Greenhouse-Geisser corrected P values, arrange the data as a Column table (one row per "
+                      "subject, one column per condition) and run the repeated-measures one-way ANOVA."],
+        )
+    if kind == "rm_unsupported":
+        return Recommendation(
+            analysis="descriptives", label="Descriptive statistics (no ready-made test for this design)", params={},
+            reason=f"'{unit}' identifies subjects that were measured repeatedly "
+                   f"(within-subject factors: {', '.join(within) or 'none'}; between-subject factors: "
+                   f"{', '.join(between) or 'none'}). Repeated measurements are not independent, so a factorial "
+                   "ANOVA with the subject column as a factor would be wrong, and no built-in analysis covers "
+                   "this combination of repeated and grouping factors.",
+            steps=[f"Value: {value}; subject: {unit}.",
+                   "Simplify the design: analyse one repeated factor at a time (mixed-design ANOVA), average "
+                   "over one of the factors, or analyse each group separately."],
+            design=design,
+            cautions=["Do not run a three-way ANOVA on these data: it would treat repeated measurements of "
+                      "the same subject as independent values."],
+        )
     return None
 
 
@@ -502,22 +851,40 @@ def _recommend_mv(table: MultipleVariablesTable, goal: str | None) -> Recommenda
             design=design,
             cautions=["Check the event coding: 1 must mean the event happened, 0 that the subject was censored."],
         )
-    rep_col = _find(cats, "replicate", "experiment", "exp", "batch", "animal", "mouse", "donor", "run", "day")
-    if goal == "nested" or (goal is None and rep_col and len(cats) >= 2 and numeric):
-        if not (rep_col and numeric and len(cats) >= 2):
-            raise StatsError("Replicate-aware analysis needs a value column, a group column and a replicate column.")
-        group = next(c for c in cats if c != rep_col)
-        return Recommendation(
-            analysis="nested_analysis", label="Replicate-aware analysis (statistics on biological-replicate means)",
-            params={"value": numeric[0], "group": group, "replicate": rep_col},
-            reason=f"'{rep_col}' identifies independent biological replicates that each contain several technical "
-                   "measurements. Technical replicates are not independent, so they are averaged within each "
-                   "biological replicate and the test is run on those means (n = number of replicates).",
-            steps=[f"Value: {numeric[0]}; group: {group}; biological replicate: {rep_col}.",
-                   "Averaging first avoids pseudoreplication, which would make P values far too small."],
-            design=design,
-            alternatives=[Alternative(analysis="anova_twoway", label="Two-way ANOVA", when="if the second column is a real experimental factor, not a replicate")],
-        )
+    # ---- is there a column that identifies the experimental unit (subject, animal, experiment)?
+    found = _unit_design(table, goal) if numeric else None
+    if goal == "nested" and found is None:
+        # asked for explicitly: fall back on a looser (substring) look at the column names
+        rep_col = _find(cats, "replicate", "experiment", "exp", "batch", "animal", "mouse", "donor", "run", "day")
+        others = [c for c in cats if c != rep_col]
+        if rep_col and others and numeric:
+            info = _unit_structure(table.frame(dropna=False), rep_col, others, numeric[0])
+            if info is not None:
+                if not (info["within"] or info["between"]):
+                    info = {**info, "between": others[:1]}
+                found = {"unit": rep_col, "by_name": True, "value": numeric[0], **info, "kind": "nested"}
+        if found is None:
+            raise StatsError(
+                "Replicate-aware analysis needs a value column, a group column and a replicate column "
+                "(named like 'Experiment', 'Replicate', 'Animal' or 'Donor')."
+            )
+    if found is not None and found["kind"] in {"rm_oneway", "mixed", "rm_twoway"}:
+        found["n_within_levels"] = int(table.frame(dropna=False)[found["within"][0]].nunique())
+    if found is not None and goal in (None, "nested", "compare") and found["kind"] != "id_only":
+        rec = _recommend_units(found, design)
+        if rec is not None:
+            return rec
+    if found is not None and found["kind"] == "id_only":
+        # one row per unit and nothing repeated: the column is a row label, never a factor or predictor
+        cats = [c for c in cats if c != found["unit"]]
+        numeric = [c for c in numeric if c != found["unit"]]
+        cols = [c for c in cols if c != found["unit"]]
+        design = {**design, "id_column": found["unit"]}
+    replicate_hint = [Alternative(
+        analysis="nested_analysis", label="Replicate-aware analysis",
+        when="if one of the grouping columns identifies independent experiments or animals (biological "
+             "replicates) rather than an experimental factor",
+    )]
     if goal in (None, "compare") and numeric and len(cats) >= 3:
         return Recommendation(
             analysis="anova_threeway", label="Three-way ANOVA",
@@ -525,7 +892,10 @@ def _recommend_mv(table: MultipleVariablesTable, goal: str | None) -> Recommenda
             reason="One measured value is classified by three grouping variables; a three-way ANOVA tests each "
                    "factor and their interactions.",
             steps=[f"Value: {numeric[0]}; factors: {cats[0]}, {cats[1]}, {cats[2]}."], design=design,
-            cautions=["Three-way designs need replication in every cell and are hard to interpret; plot the data first."],
+            cautions=["Three-way designs need replication in every cell and are hard to interpret; plot the data first.",
+                      "Every value must come from a different subject. If one of the columns identifies subjects "
+                      "that were measured repeatedly, use a repeated-measures or mixed-design ANOVA instead."],
+            alternatives=replicate_hint,
         )
     if goal in (None, "compare") and numeric and len(cats) == 2:
         return Recommendation(
@@ -534,6 +904,7 @@ def _recommend_mv(table: MultipleVariablesTable, goal: str | None) -> Recommenda
             reason="One measured value is classified by two grouping variables; a two-way ANOVA tests each factor "
                    "and whether the effect of one depends on the other (interaction).",
             steps=[f"Value: {numeric[0]}; factors: {cats[0]} and {cats[1]}."], design=design,
+            alternatives=replicate_hint,
         )
     if goal in (None, "compare", "ancova") and len(numeric) >= 2 and len(cats) == 1:
         return Recommendation(
