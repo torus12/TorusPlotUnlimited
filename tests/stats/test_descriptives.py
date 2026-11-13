@@ -98,6 +98,19 @@ def test_describe_matches_numpy_scipy_pandas_statsmodels():
     assert d["geometric_mean"] == pytest.approx(stats.gmean(X), rel=1e-12)
 
 
+def test_describe_is_underflow_safe_without_a_floor():
+    """Tiny values that really differ are not constant (no absolute floor): the SD of
+    [1e-80, 2e-80, 3e-80] is 1e-80 and [0, 0, 1.1e-153] (squares underflow) has a finite,
+    correct SD instead of 0 or a ZeroDivisionError."""
+    d = ds.describe([1e-80, 2e-80, 3e-80])
+    assert d["sd"] == pytest.approx(1e-80, rel=1e-12)
+    assert d["cv_percent"] == pytest.approx(50.0, rel=1e-12)
+    d = ds.describe([0.0, 0.0, 1.1e-153])
+    assert d["sd"] == pytest.approx(1.1e-153 / math.sqrt(3.0), rel=1e-12)
+    assert d["skewness"] == pytest.approx(ds.describe([0.0, 0.0, 1.0])["skewness"], rel=1e-12)
+    assert ds.describe([1e-80, 1e-80, 1e-80])["sd"] == 0.0
+
+
 def test_ci_level_changes_interval_only():
     d90, d99 = ds.describe(X, ci_level=0.90), ds.describe(X, ci_level=0.99)
     lo, hi = DescrStatsW(X).tconfint_mean(alpha=0.10)

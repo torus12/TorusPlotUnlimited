@@ -164,9 +164,11 @@ def run_analysis(
         )
     if table.approximate and not allow_approximate:
         raise ApproximateDataError(
-            f"Table '{table.name}' holds APPROXIMATE digitized data (for reference only). "
-            "Statistical tests are blocked on it. Pass allow_approximate=True (or tick the "
-            "override box) only if you understand the numbers are estimates read off an image."
+            f"Table '{table.name}' holds APPROXIMATE values digitized from an image (for reference "
+            "only), so statistical tests are switched off for it. If a rough reference value is all "
+            "you need, tick 'I understand these are estimates read off an image. Allow statistics "
+            "anyway.' on page 2 Analyze; the result is then marked APPROXIMATE. (In a script, pass "
+            "allow_approximate=True.)"
         )
     unknown = set(params) - {p.name for p in info.params}
     if unknown:

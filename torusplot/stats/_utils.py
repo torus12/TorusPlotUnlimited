@@ -150,6 +150,14 @@ class Rescaled:
             raise StatsError(_TOO_LARGE)
         return out
 
+    def spread_array(self, values: np.ndarray) -> np.ndarray:
+        """:meth:`spread` for a whole array (e.g. residuals); StatsError on overflow."""
+        with np.errstate(over="ignore", under="ignore"):
+            out = np.ldexp(np.asarray(values, dtype=float), self._e1 + self._e2)
+        if not np.all(np.isfinite(out)):
+            raise StatsError(_TOO_LARGE)
+        return out
+
     def square(self, value: float | None) -> float | None:
         """Map a squared-unit quantity (variance, sum of squares, mean square) back.
 
@@ -165,6 +173,12 @@ class Rescaled:
         if not math.isfinite(out) or (out == 0.0 and v != 0.0):
             return None
         return out
+
+    @property
+    def exponents(self) -> tuple[int, int]:
+        """(e1, e2): data = (centre + z * 2**e2) * 2**e1; ``x / 2**e1`` is the data scaled
+        by a power of two only (no centring)."""
+        return self._e1, self._e2
 
     def to_scaled_location(self, value: float) -> float:
         """Map a location in data units (e.g. a hypothetical mean) into rescaled units."""

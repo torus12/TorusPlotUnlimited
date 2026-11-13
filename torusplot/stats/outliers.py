@@ -166,14 +166,10 @@ def grubbs_test(x: Iterable[Any], *, alpha: float = 0.05, iterative: bool = Fals
         out["sd"] = 0.0
         notes.append("All values are identical, so there is no spread and no value can be an outlier.")
         return out
-    if n < 7:
-        notes.append(
-            f"With only {n} values Grubbs' test has little power: a single value can hardly ever be "
-            "flagged, however extreme it looks."
-        )
     remaining = arr.copy()
     remaining_index = index.copy()
     step_no = 0
+    ties_flag: list[float] = []  # values flagged only because all the others are identical
     while remaining.size >= 3 and not is_constant(remaining):
         step_no += 1
         step = _grubbs_step(remaining, alpha)
@@ -186,10 +182,27 @@ def grubbs_test(x: Iterable[Any], *, alpha: float = 0.05, iterative: bool = Fals
         if not step["is_outlier"]:
             break
         out["flagged"].append({k: step[k] for k in ("index", "value", "g", "g_critical", "p_value", "step")})
+        if is_constant(np.delete(remaining, pos)):
+            ties_flag.append(step["value"])
         if not iterative:
             break
         remaining = np.delete(remaining, pos)
         remaining_index = np.delete(remaining_index, pos)
+    if ties_flag:
+        notes.append(
+            f"The flagged value {fmt(ties_flag[0])} is the only one that differs from the others, which "
+            "are all identical. In that situation Grubbs' G takes its largest possible value, "
+            "(n - 1) / sqrt(n), however small the difference is, so such a value is flagged whatever "
+            "its size. The flag reflects identical (tied or rounded) values, i.e. limited measurement "
+            "resolution, not evidence of an extreme value: check whether the data were recorded with "
+            "enough decimals before treating it as an outlier."
+        )
+    elif n < 7:
+        notes.append(
+            f"With only {n} values Grubbs' test has little power: only a value very far from the others "
+            "can be flagged"
+            + (", so finding no outlier is weak evidence that there is none." if not out["flagged"] else ".")
+        )
     if iterative and len(out["flagged"]) > 1:
         notes.append(
             "Several values were flagged by repeating Grubbs' test. Each round used the same alpha, so "

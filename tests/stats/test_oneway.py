@@ -789,6 +789,62 @@ def test_registered_analysis_runs_with_defaults(key):
     assert all(isinstance(row["n"], int) for row in res.descriptives)
 
 
+def test_tooltips_match_each_test():
+    """Each test's tooltips describe that test: Kruskal-Wallis's two-group equivalent is
+    the Mann-Whitney test, and the unequal-variance ANOVAs and Kruskal-Wallis do not offer
+    Dunnett's test, so their control tooltips must not promise it."""
+    def help_of(key, name):
+        return next(p.help for p in get_analysis(key).params if p.name == name)
+
+    assert "Mann-Whitney" in help_of("kruskal_wallis", "groups")
+    assert "t test gives the same answer" not in help_of("kruskal_wallis", "groups")
+    assert "Welch's t test" in help_of("welch_anova", "groups")
+    assert "Welch's t test" in help_of("brown_forsythe_anova", "groups")
+    assert "a t test gives the same answer" in help_of("anova_oneway", "groups")
+    for key in ("welch_anova", "brown_forsythe_anova", "kruskal_wallis"):
+        control = help_of(key, "control")
+        assert "used by Dunnett" not in control and "Dunnett's test then" not in control
+    assert "Dunn's test" in help_of("kruskal_wallis", "control")
+    assert "Games-Howell" in help_of("welch_anova", "control")
+    assert "Dunnett" in help_of("anova_oneway", "control")
+
+
+@pytest.mark.parametrize("scale", [1e200, 1e-200])
+def test_anova_family_is_scale_equivariant_at_extreme_magnitudes(scale):
+    """F, P and effect sizes are scale invariant and estimates scale with the data, also at
+    1e200 / 1e-200 where squares over- or underflow; sums of squares that cannot be
+    represented are reported as missing with a warning (never inf, 0 or NaN)."""
+    base = {"a": np.array([1.0, 2.0, 3.0, 4.5]), "b": np.array([2.0, 3.0, 4.0, 7.5]),
+            "c": np.array([5.0, 6.0, 8.0, 9.5])}
+    scaled = {k: v * scale for k, v in base.items()}
+    for func in (ow.anova_oneway, ow.welch_anova, ow.brown_forsythe_anova):
+        ref, res = func(base), func(scaled)
+        assert res.statistic == pytest.approx(ref.statistic, rel=1e-9)
+        assert res.p_value == pytest.approx(ref.p_value, rel=1e-9)
+        assert len(res.comparisons) == len(ref.comparisons) == 3
+        for c_ref, c in zip(ref.comparisons, res.comparisons):
+            assert c.estimate == pytest.approx(c_ref.estimate * scale, rel=1e-9)
+            assert c.ci_low == pytest.approx(c_ref.ci_low * scale, rel=1e-9)
+            assert c.p_adjusted == pytest.approx(c_ref.p_adjusted, rel=1e-9)
+        for r_ref, r in zip(ref.descriptives, res.descriptives):
+            assert r["sd"] == pytest.approx(r_ref["sd"] * scale, rel=1e-9)
+            assert r["ci_high"] == pytest.approx(r_ref["ci_high"] * scale, rel=1e-9)
+    res = ow.anova_oneway(scaled)
+    assert res.anova_table[0]["ss"] is None and any("shown as missing" in w for w in res.warnings)
+    assert res.effect_sizes[0].value == pytest.approx(ow.anova_oneway(base).effect_sizes[0].value, rel=1e-9)
+    assert res.extra["root_mse"] == pytest.approx(ow.anova_oneway(base).extra["root_mse"] * scale, rel=1e-9)
+    assert [a.status for a in res.assumptions] == [a.status for a in ow.anova_oneway(base).assumptions]
+
+
+def test_bartlett_check_text_names_the_actual_reason():
+    one_value = ow.anova_oneway({"a": [1.0], "b": [2.0, 3.0], "c": [4.0, 6.0]}, posthoc="none")
+    check = next(a for a in one_value.assumptions if a.name == "Equal variances (Bartlett)")
+    assert check.status == "warn" and "fewer than 2 values" in check.detail
+    flat = ow.anova_oneway({"a": [1.0, 1.0], "b": [2.0, 3.0], "c": [4.0, 6.0]}, posthoc="none")
+    check = next(a for a in flat.assumptions if a.name == "Equal variances (Bartlett)")
+    assert "no variability" in check.detail and "fewer than 2" not in check.detail
+
+
 def test_registry_values_match_array_level():
     table = _table()
     assert run_analysis(table, "anova_oneway").statistic == pytest.approx(

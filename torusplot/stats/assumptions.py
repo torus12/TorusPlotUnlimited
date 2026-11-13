@@ -37,8 +37,15 @@ Equal variances
 * Two-sided F test for the ratio of two variances (Snedecor & Cochran, *Statistical
   Methods*). Also very sensitive to non-normality.
 
-Levene and Brown-Forsythe are implemented here from the defining formulas (and
+Levene, Brown-Forsythe and Bartlett are implemented here from the defining formulas (and
 cross-checked against scipy in the tests).
+
+Numerical range: every test here is invariant to the origin and unit of the data, so all
+statistics are computed on internally rescaled values (``_utils.rescale``: subtract a
+common location, divide by a power of two). Data with a huge offset (1e12 + small
+deviations) or of extreme magnitude (1e-80, 1e200) therefore give the same statistics as
+the same numbers in convenient units, and "no variability" means equal to within
+floating-point rounding of the original values.
 """
 
 from __future__ import annotations
@@ -53,7 +60,7 @@ from scipy import stats
 from statsmodels.stats.diagnostic import lilliefors as _sm_lilliefors
 
 from ..data.tables import DataTable
-from ._utils import StatsError, check_alpha, clean, fmt, is_constant, p_phrase, sig_phrase
+from ._utils import StatsError, check_alpha, clean, fmt, is_constant, p_phrase, rescale, sig_phrase
 from .descriptives import _describe_clean, _name_list
 from .registry import ParamSpec, register
 from .result import AssumptionCheck, Parameter, StatResult
@@ -133,6 +140,7 @@ def shapiro_wilk(x: Iterable[Any], *, alpha: float = 0.05) -> dict[str, Any]:
     notes: list[str] = []
     if is_constant(arr):
         return _normality_dict("shapiro", "W", None, None, int(arr.size), alpha, [_CONSTANT_NOTE])
+    arr = rescale(arr).arrays[0]  # W is invariant to origin and unit
     with _warnings.catch_warnings():
         _warnings.simplefilter("ignore")
         res = stats.shapiro(arr)
@@ -190,6 +198,7 @@ def dagostino_pearson(x: Iterable[Any], *, alpha: float = 0.05) -> dict[str, Any
     n = int(arr.size)
     if is_constant(arr):
         return _normality_dict("dagostino", "K2", None, None, n, alpha, [_CONSTANT_NOTE])
+    arr = rescale(arr).arrays[0]  # third and fourth powers would over- or underflow otherwise
     notes: list[str] = []
     with np.errstate(all="ignore"):
         z_skew = _skewness_z(arr)
@@ -216,13 +225,16 @@ def kolmogorov_smirnov_normal(x: Iterable[Any], *, alpha: float = 0.05) -> dict[
     The reference normal distribution uses the sample mean and SD, so the classical KS P
     value would be invalid (far too large); the P value reported here is Lilliefors' (1967)
     correction, taken from statsmodels' simulation-based table. That table is bounded:
-    P values below 0.001 are reported as 0.001 and above 0.99 as 0.99. Needs n >= 5.
+    P values below 0.001 are returned as 0.001 and above 0.99 as 0.99; ``p_limit`` is
+    then ``"< 0.001"`` or ``"> 0.99"`` (else ``None``) and the text shows "P < 0.001" /
+    "P > 0.99" instead of an exact-looking number. Needs n >= 5.
     """
     alpha = check_alpha(alpha)
     arr = _prepare(x, 5, "Kolmogorov-Smirnov")
     n = int(arr.size)
     if is_constant(arr):
         return _normality_dict("ks", "D", None, None, n, alpha, [_CONSTANT_NOTE])
+    arr = rescale(arr).arrays[0]
     with _warnings.catch_warnings():
         _warnings.simplefilter("ignore")
         with np.errstate(all="ignore"):
@@ -235,11 +247,15 @@ def kolmogorov_smirnov_normal(x: Iterable[Any], *, alpha: float = 0.05) -> dict[
         )
     notes: list[str] = []
     p_note = "Lilliefors-corrected (mean and SD estimated from the data)"
+    p_limit: str | None = None
     if p <= 0.001 + 1e-12:
         p_note += "; the true P value is 0.001 or smaller (limit of the table)"
+        p_limit = "< 0.001"
     elif p >= 0.99 - 1e-12:
         p_note += "; the true P value is 0.99 or larger (limit of the table)"
-    return _normality_dict("ks", "D", d, min(max(p, 0.0), 1.0), n, alpha, notes, p_note=p_note)
+        p_limit = "> 0.99"
+    return _normality_dict("ks", "D", d, min(max(p, 0.0), 1.0), n, alpha, notes, p_note=p_note,
+                           p_limit=p_limit)
 
 
 def _anderson_p(a_star: float) -> float:
@@ -269,6 +285,7 @@ def anderson_darling(x: Iterable[Any], *, alpha: float = 0.05) -> dict[str, Any]
     n = int(arr.size)
     if is_constant(arr):
         return _normality_dict("anderson", "A2", None, None, n, alpha, [_CONSTANT_NOTE])
+    arr = rescale(arr).arrays[0]
     z = np.sort((arr - arr.mean()) / arr.std(ddof=1))
     i = np.arange(1, n + 1)
     with np.errstate(all="ignore"):
@@ -392,22 +409,24 @@ def normality_tests(
                 )
                 checks.append(AssumptionCheck(name=check_name, target=label, status="warn", detail=detail))
                 table.append({"group": label, "test": test_label, "statistic_name": None, "statistic": None,
-                              "p_value": None, "n": int(arr.size), "passed": None})
+                              "p_value": None, "n": int(arr.size), "passed": None, "p_limit": None,
+                              "p_is_table_limit": False})
                 continue
             res = _NORMALITY_FUNCS[key](arr, alpha=alpha)
             for w in res["warnings"]:
                 text = f"{label}: {w}"
                 if text not in warnings:
                     warnings.append(text)
+            p_text = f"P {res['p_limit']}" if res.get("p_limit") else p_phrase(res["p_value"])
             if res["p_value"] is None:
                 status, detail = "warn", " ".join(res["warnings"]) or "Could not be computed."
             elif res["normal"]:
                 status = "pass"
-                detail = f"No evidence against normality ({p_phrase(res['p_value'])})."
+                detail = f"No evidence against normality ({p_text})."
                 group_done += 1
             else:
                 status = "fail"
-                detail = f"The values deviate from a normal distribution ({p_phrase(res['p_value'])})."
+                detail = f"The values deviate from a normal distribution ({p_text})."
                 failed.setdefault(label, []).append(test_label)
                 group_done += 1
             if res.get("p_note") and res["p_value"] is not None:
@@ -416,7 +435,8 @@ def normality_tests(
                                           p_value=res["p_value"], status=status, detail=detail))
             table.append({"group": label, "test": test_label, "statistic_name": res["statistic_name"],
                           "statistic": res["statistic"], "p_value": res["p_value"], "n": res["n"],
-                          "passed": res["normal"]})
+                          "passed": res["normal"], "p_limit": res.get("p_limit"),
+                          "p_is_table_limit": bool(res.get("p_limit"))})
         n_done += group_done
         if group_done == 0:
             untestable.append(label)
@@ -534,12 +554,17 @@ def levene_test(groups: Any, *, center: str = "mean") -> dict[str, Any]:
     ``groups`` is ``{name: values}`` (or a sequence of arrays). When the deviations have no
     spread within the groups (e.g. every group has only 2 values) F is undefined and the
     statistic and P value are ``None`` with an explanatory warning.
+
+    F is invariant to the origin and unit of the data, so it is computed on jointly
+    rescaled values (``_utils.rescale``); "no spread" means a within-group sum of squares
+    at the level of the rounding error of the original values.
     """
     if center not in {"mean", "median"}:
         raise StatsError("center must be 'mean' (Levene) or 'median' (Brown-Forsythe).")
     data, _ = _variance_groups(groups)
     name = "Levene" if center == "mean" else "Brown-Forsythe"
-    arrays = list(data.values())
+    rs = rescale(*data.values())
+    arrays = rs.arrays
     k = len(arrays)
     n_total = int(sum(a.size for a in arrays))
     df1, df2 = float(k - 1), float(n_total - k)
@@ -549,8 +574,8 @@ def levene_test(groups: Any, *, center: str = "mean") -> dict[str, Any]:
     grand = float(np.concatenate(z).mean())
     ss_between = float(np.sum(sizes * (z_means - grand) ** 2))
     ss_within = float(sum(np.sum((zi - zm) ** 2) for zi, zm in zip(z, z_means)))
-    scale = max(float(np.max(np.abs(np.concatenate(arrays)))), 1e-300)
-    tol = n_total * (1e-12 * scale) ** 2
+    # each deviation carries a rounding error of a few ulp of the original values
+    tol = n_total * (8.0 * rs.noise) ** 2
     if ss_within <= tol:
         if ss_between <= tol:
             note = ("The spread is identical in every group (no variability at all, or exactly equal "
@@ -572,25 +597,40 @@ def brown_forsythe_test(groups: Any) -> dict[str, Any]:
 def bartlett_test(groups: Any) -> dict[str, Any]:
     """Bartlett's (1937) test for equal variances (chi-square with k - 1 df).
 
+    With k groups, N values, group variances s_i^2 and pooled variance
+    s_p^2 = sum (n_i - 1) s_i^2 / (N - k):
+
+        T = [(N - k) ln s_p^2 - sum (n_i - 1) ln s_i^2] / C,
+        C = 1 + (sum 1 / (n_i - 1) - 1 / (N - k)) / (3 (k - 1)).
+
+    The numerator is never negative (the log is concave) and is exactly 0 when all
+    variances are equal, so a slightly negative value from rounding is set to 0 (P = 1).
+    Computed from this formula on jointly rescaled data (invariant to origin and unit).
+
     Most powerful when every group is normal, but very sensitive to non-normality: a
     small P value can reflect skewed or heavy-tailed data rather than unequal variances.
     """
     data, _ = _variance_groups(groups)
-    arrays = list(data.values())
-    df1 = float(len(arrays) - 1)
-    if any(is_constant(a) for a in arrays):
+    df1 = float(len(data) - 1)
+    if any(is_constant(a) for a in data.values()):
         return _variance_dict(
             "Bartlett", "chi2", None, df1, None, None,
             ["At least one group has no variability, so Bartlett's test cannot be computed."],
         )
-    with _warnings.catch_warnings():
-        _warnings.simplefilter("ignore")
-        res = stats.bartlett(*arrays)
-    statistic, p = float(res.statistic), float(res.pvalue)
-    if not (math.isfinite(statistic) and math.isfinite(p)):
+    arrays = rescale(*data.values()).arrays
+    sizes = np.array([a.size for a in arrays], dtype=float)
+    variances = np.array([float(np.var(a, ddof=1)) for a in arrays])
+    k = len(arrays)
+    df_within = float(sizes.sum() - k)
+    if not np.all(variances > 0) or not np.all(np.isfinite(variances)):
         return _variance_dict("Bartlett", "chi2", None, df1, None, None,
                               ["Bartlett's test could not be computed for these values."])
-    return _variance_dict("Bartlett", "chi2", statistic, df1, None, p, [])
+    pooled = float(np.sum((sizes - 1.0) * variances) / df_within)
+    numerator = df_within * math.log(pooled) - float(np.sum((sizes - 1.0) * np.log(variances)))
+    correction = 1.0 + (float(np.sum(1.0 / (sizes - 1.0))) - 1.0 / df_within) / (3.0 * (k - 1))
+    statistic = max(numerator, 0.0) / correction
+    p = float(stats.chi2.sf(statistic, k - 1))
+    return _variance_dict("Bartlett", "chi2", float(statistic), df1, None, p, [])
 
 
 def f_test_two_variances(a: Iterable[Any], b: Iterable[Any], *, ci_level: float = 0.95) -> dict[str, Any]:
@@ -611,7 +651,8 @@ def f_test_two_variances(a: Iterable[Any], b: Iterable[Any], *, ci_level: float 
             ["At least one group has no variability, so the variance ratio cannot be tested."],
             ratio_ci_low=None, ratio_ci_high=None, ci_level=float(ci_level),
         )
-    f = float(x.var(ddof=1) / y.var(ddof=1))
+    zx, zy = rescale(x, y).arrays  # the ratio is invariant to a common origin and unit
+    f = float(zx.var(ddof=1) / zy.var(ddof=1))
     p = float(min(1.0, 2.0 * min(stats.f.cdf(f, df1, df2), stats.f.sf(f, df1, df2))))
     tail = (1.0 - float(ci_level)) / 2.0
     lo = f / float(stats.f.ppf(1.0 - tail, df1, df2))
@@ -675,8 +716,11 @@ def equal_variance_tests(groups: dict[str, Iterable[Any]], *, alpha: float = 0.0
     rows = []
     for name, arr in data.items():
         d = _describe_clean(arr, 0.95)
+        variance = None if d["sd"] is None else d["sd"] * d["sd"]
+        if variance is not None and not math.isfinite(variance):
+            variance = None  # larger than the largest representable number; the SD is still given
         rows.append({"group": name, "n": d["n"], "mean": d["mean"], "median": d["median"], "sd": d["sd"],
-                     "variance": None if d["sd"] is None else d["sd"] ** 2, "iqr": d["iqr"]})
+                     "variance": variance, "iqr": d["iqr"]})
     sds = [r["sd"] for r in rows]
     parameters: list[Parameter] = []
     lo_sd, hi_sd = min(sds), max(sds)
@@ -695,12 +739,20 @@ def equal_variance_tests(groups: dict[str, Iterable[Any]], *, alpha: float = 0.0
               "equal_variances": None if r["p_value"] is None else bool(r["p_value"] >= alpha)}
              for r in results]
 
+    # SDs computed from values of this magnitude carry rounding error of a few ulp of it
+    magnitude = max(float(np.max(np.abs(a))) for a in data.values())
     hi_name = rows[int(np.argmax(sds))]["group"]
     lo_name = rows[int(np.argmin(sds))]["group"]
-    ratio_text = (
-        f"The SD ranges from {fmt(lo_sd)} ({lo_name}) to {fmt(hi_sd)} ({hi_name})"
-        + (f", a {fmt(ratio, 3)}-fold difference." if ratio is not None else ".")
-    )
+    if hi_sd == 0.0:
+        ratio_text = "No group shows any variability (every SD is 0)."
+    elif hi_sd - lo_sd <= 8.0 * np.finfo(float).eps * max(hi_sd, magnitude):  # equal to rounding
+        ratio_text = f"Every group has the same SD ({fmt(hi_sd)})."
+    else:
+        ratio_text = (
+            f"The SD ranges from {fmt(lo_sd)} ({lo_name}) to {fmt(hi_sd)} ({hi_name})"
+            + (f", a {fmt(ratio, 3)}-fold difference." if ratio is not None else
+               "; at least one group has no variability.")
+        )
     if bf["p_value"] is None:
         verdict = ("The Brown-Forsythe test could not be computed for these data, so equality of "
                    "variances cannot be judged formally.")
@@ -810,13 +862,45 @@ _GROUPS_PARAM = ParamSpec(
 )
 
 
+_NORMALITY_GROUPS_PARAM = ParamSpec(
+    "groups", "Groups to check", kind="groups", default=None, optional=True,
+    help="Which columns to check. Leave empty to check every column. On a multiple-variables "
+         "table: the numeric columns to test (each tested on its own); leave empty to use "
+         "'Variable to check'.",
+)
+
+
+def _normality_columns(table: DataTable, groups: Any, column: Any, by: Any) -> dict[str, np.ndarray]:
+    """Numeric columns of a multiple-variables table named by the ``groups`` option."""
+    names = [groups] if isinstance(groups, str) else [str(g) for g in groups]
+    if by is not None and by != "":
+        raise StatsError(
+            "'Groups to check' cannot be combined with 'Split by' on a multiple-variables table: "
+            "choose one column in 'Variable to check' to test it within each category, or clear "
+            "'Split by' to test several columns."
+        )
+    if column is not None and column != "" and str(column) not in names:
+        raise StatsError(
+            f"'Variable to check' ({column}) and 'Groups to check' ({', '.join(names)}) name different "
+            "columns. Use one of the two options."
+        )
+    unknown = [c for c in names if c not in table.data.columns]
+    if unknown:
+        raise StatsError(f"Unknown column(s): {unknown}. Available columns: {list(table.data.columns)}.")
+    text = [c for c in names if c not in table.numeric_columns]
+    if text:
+        raise StatsError(f"Column(s) {text} hold text, not numbers. Numeric columns: {table.numeric_columns}.")
+    frame = table.analysis_frame()
+    return {c: frame[c].to_numpy(dtype=float) for c in dict.fromkeys(names)}
+
+
 @register(
     key="normality",
     label="Normality tests",
     category="Assumption checks",
     tables=("column", "multiple_variables"),
     params=(
-        _GROUPS_PARAM,
+        _NORMALITY_GROUPS_PARAM,
         ParamSpec(
             "column", "Variable to check", kind="column", default=None, optional=True,
             help="Multiple-variables tables only: the numeric column to test. Leave empty to use the "
@@ -845,7 +929,10 @@ _GROUPS_PARAM = ParamSpec(
 def _run_normality(table: DataTable, groups: Any = None, column: Any = None, by: Any = None,
                    alpha: float = 0.05, include_anderson: bool = False, **_: Any) -> StatResult:
     extra_notes: list[str] = []
-    if table.kind == "multiple_variables":
+    chosen = not (groups is None or groups == "" or (isinstance(groups, list | tuple) and len(groups) == 0))
+    if table.kind == "multiple_variables" and chosen:
+        data = _normality_columns(table, groups, column, by)
+    elif table.kind == "multiple_variables":
         data, extra_notes = _multiple_variables_groups(table, column, by)
     else:
         data = select_groups(table, groups)

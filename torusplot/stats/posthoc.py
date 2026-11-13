@@ -52,9 +52,22 @@ import numpy as np
 from scipy import optimize, special, stats
 
 from . import effect_sizes as es
-from ._utils import StatsError, check_alpha, check_alternative
+from ._utils import (
+    _TOO_LARGE,
+    StatsError,
+    check_alpha,
+    check_alternative,
+    difference_tolerance,
+    differences_constant,
+    is_constant,
+    pow2_back,
+    pow2_scaled,
+    rescale,
+    snap_differences,
+)
 from .multiplicity import METHOD_LABELS, adjust_pvalues
 from .result import Comparison, EffectSize
+from .two_group import EXACT_TIES_MAX_N, _signed_rank_core
 
 __all__ = [
     "POSTHOC_METHODS",
@@ -141,27 +154,39 @@ class PosthocResult(tuple):
 
 
 def _near_constant(arr: np.ndarray) -> bool:
-    """True when all values agree to within a few units in the last place.
+    """True when all values agree to within rounding error.
 
-    (The shared ``is_constant`` uses a 1e-12 relative tolerance, which would call data
-    such as 1e12 + {0.2, ..., 0.6} constant; here only rounding-level spread counts.)
+    This is the shared :func:`~torusplot.stats._utils.is_constant` rule (spread within a
+    few units in the last place of the largest magnitude, no absolute floor), so data
+    such as 1e12 + {0.2, ..., 0.6} or 1e-80 * {1, 2, 3} are *not* constant. Paired
+    differences are judged against the rounding error of the original values instead
+    (see :func:`pairwise_t`).
     """
-    if arr.size < 2:
-        return True
-    return bool(np.ptp(arr) <= 8.0 * np.finfo(float).eps * float(np.max(np.abs(arr))))
+    return is_constant(arr)
 
 
 def _mean(arr: np.ndarray) -> float:
-    return float(arr[0]) if _near_constant(arr) else float(np.mean(arr))
+    """Mean; computed on values scaled by a power of two so the sum cannot overflow."""
+    if _near_constant(arr):
+        return float(arr[0])
+    scaled, e = pow2_scaled(arr)
+    return pow2_back(float(np.mean(scaled)), e)
 
 
 def _variance(arr: np.ndarray) -> float:
-    """Sample variance; exactly 0 for a constant group; NaN when n < 2."""
+    """Sample variance; exactly 0 for a constant group; NaN when n < 2.
+
+    Computed on power-of-two scaled values (exact), so squares neither overflow nor
+    underflow; a StatsError is raised only when the variance itself exceeds the largest
+    representable number."""
     if arr.size < 2:
         return math.nan
     if _near_constant(arr):
         return 0.0
-    return float(np.var(arr, ddof=1))
+    scaled, e = pow2_scaled(arr - _mean(arr) if math.isfinite(float(np.ptp(arr))) else arr)
+    if not np.all(np.isfinite(scaled)):
+        raise StatsError(_TOO_LARGE)
+    return pow2_back(float(np.var(scaled, ddof=1)), e, 2)
 
 
 def _no_difference(diff: float, a: np.ndarray, b: np.ndarray) -> bool:
@@ -666,14 +691,20 @@ def pairwise_t(
         target = f"{s.names[i]} vs {s.names[j]}"
         df: float | None
         if paired:
-            d = a - b
-            constant = _near_constant(d)
-            diff = float(d[0]) if constant else float(np.mean(d))
-            sd = 0.0 if constant else float(np.std(d, ddof=1))
-            se = sd / math.sqrt(d.size)
+            d, tol = _paired_diff(a, b)
+            # judged at the rounding error of the ORIGINAL values (100.1 - 100 and 1.1 - 1
+            # are the same difference), as in the paired t test
+            constant = differences_constant(d, tol)
+            if constant:
+                diff = float(snap_differences(d, tol)[int(np.argmin(tol))])
+                se = 0.0
+            else:
+                rs = rescale(d)
+                dz = rs.arrays[0]
+                diff = rs.location(float(dz.mean()))
+                se = rs.spread(float(dz.std(ddof=1)) / math.sqrt(d.size))
             df = float(d.size - 1)
-            zero = constant and abs(diff) <= 8.0 * np.finfo(float).eps * max(
-                float(np.max(np.abs(a))), float(np.max(np.abs(b))))
+            zero = constant and diff == 0.0
             effect = (EffectSize(name="Hedges' g_z (paired)", value=None, target=target)
                       if constant else es.cohen_d_paired(a, b, hedges=True, target=target))
         else:
@@ -807,10 +838,19 @@ def dunn(
 # ------------------------------------------------------- after the Friedman test
 
 
+def _paired_diff(a: np.ndarray, b: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """(a - b, rounding tolerance of each difference); StatsError on overflow."""
+    with np.errstate(over="ignore", invalid="ignore"):
+        d = a - b
+    if not np.all(np.isfinite(d)):
+        raise StatsError(_TOO_LARGE)
+    return d, difference_tolerance(a, b)
+
+
 def _walsh_median(d: np.ndarray) -> float:
     """Hodges-Lehmann estimate of the typical difference: median of all Walsh averages."""
     i, j = np.triu_indices(d.size)
-    return float(np.median((d[i] + d[j]) / 2.0))
+    return float(np.median(d[i] / 2.0 + d[j] / 2.0))
 
 
 def friedman_posthoc(
@@ -833,9 +873,15 @@ def friedman_posthoc(
     variance has no tie correction, which makes the comparisons slightly conservative
     when there are ties within subjects.
 
-    ``method='wilcoxon'``: a Wilcoxon (1945) signed-rank test for each pair; ``estimate``
-    is then the Hodges-Lehmann median of the paired differences and the statistic is the
-    smaller rank sum W.
+    ``method='wilcoxon'``: a Wilcoxon (1945) matched-pairs signed-rank test for each pair,
+    computed by the same engine as :func:`torusplot.stats.two_group.wilcoxon_signed_rank`
+    (zero differences discarded; differences compared at the rounding error of the
+    original values; exact P value without ties for up to 50 non-zero differences, exact
+    permutation P value of the tied mid-ranks for up to 7, otherwise the normal
+    approximation with tie correction and continuity correction, never below the
+    smallest attainable P value), so each comparison has exactly the P value of that
+    two-group test. ``estimate`` is the Hodges-Lehmann median of the paired differences
+    and the statistic is W = W+ - W- (sum of the signed ranks), as in the two-group test.
     """
     check_alpha(alpha)
     key = _normalise_adjust(adjust)
@@ -879,25 +925,27 @@ def friedman_posthoc(
         what = "Dunn-type comparisons of within-subject rank sums"
     else:
         for i, j in pairs:
-            d = data[:, i] - data[:, j]
-            nonzero = d[d != 0]
-            if nonzero.size == 0:
+            raw, tol = _paired_diff(data[:, i], data[:, j])
+            d = snap_differences(raw, tol)
+            if not np.any(d != 0):
                 rows.append((i, j, 0.0, None, "W", None, None))
                 notes.append("At least one pair of conditions has identical values for every "
                              "subject; its Wilcoxon test is undefined.")
                 continue
-            with warnings.catch_warnings(), np.errstate(all="ignore"):
-                warnings.simplefilter("ignore")
-                res = stats.wilcoxon(d, zero_method="wilcox", alternative="two-sided")
-            p = float(res.pvalue)
-            rows.append((i, j, _walsh_median(d), None, "W", float(res.statistic),
-                         None if math.isnan(p) else p))
+            core = _signed_rank_core(d, zero_method="wilcox", method="auto", alternative="two-sided")
+            rows.append((i, j, _walsh_median(d), None, "W", float(core["w"]), core["p"]))
         label = (f"Wilcoxon signed-rank tests, {METHOD_LABELS[key]}" if key != "none"
                  else "Wilcoxon signed-rank tests (unadjusted)")
         cites = [CITE_WILCOXON]
-        what = "pairwise Wilcoxon signed-rank tests"
-        notes.append("Wilcoxon P values are exact for small samples without ties or zero "
-                     "differences and use the normal approximation otherwise.")
+        what = "pairwise Wilcoxon matched-pairs signed-rank tests"
+        notes.append(
+            "Each Wilcoxon comparison is the same test as the two-group Wilcoxon matched-pairs "
+            "signed-rank test (zero differences discarded; W = sum of the signed ranks). P values "
+            "are exact when no two non-zero differences are tied and there are at most 50 of them, "
+            f"exact for the tied ranks (permutation distribution) when there are ties and at most "
+            f"{EXACT_TIES_MAX_N} non-zero differences, and otherwise from the normal approximation with tie correction "
+            "and continuity correction."
+        )
     if key != "none":
         cites.append(_ADJUST_CITATIONS[key])
     adjusted = _adjust([r[6] for r in rows], key)
@@ -905,8 +953,9 @@ def friedman_posthoc(
         Comparison(
             id="", group_a=labels[i], group_b=labels[j], estimate=est, se=se,
             statistic_name=stat_name, statistic=stat, p_value=p, p_adjusted=p_adj,
+            # differences with rounding noise removed, as in the two-group signed-rank test
             effect_size=es.rank_biserial_paired(
-                data[:, i] - data[:, j], target=f"{labels[i]} vs {labels[j]}"),
+                snap_differences(*_paired_diff(data[:, i], data[:, j])), target=f"{labels[i]} vs {labels[j]}"),
         )
         for (i, j, est, se, stat_name, stat, p), p_adj in zip(rows, adjusted)
     ]

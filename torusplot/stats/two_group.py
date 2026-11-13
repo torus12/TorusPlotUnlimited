@@ -35,7 +35,7 @@ Conventions (identical for every test in this module)
 * Exact P values for the rank tests are used when there are no ties and no more than
   50 values per group (50 non-zero differences for the signed-rank test). With ties the
   exact *conditional* (permutation) distribution of the tied mid-ranks is used for very
-  small samples (at most 7 values per group / 7 non-zero differences, ``EXACT_TIES_MAX_N``),
+  small samples (at most 6 values per group / 6 non-zero differences, ``EXACT_TIES_MAX_N``),
   where the normal approximation is poorest and can even fall below the smallest P value
   that is attainable; for larger tied samples, and above 50, the normal approximation
   with tie correction and continuity correction is used. An approximate P value is never
@@ -92,9 +92,9 @@ from .result import AssumptionCheck, EffectSize, Parameter, StatResult
 EXACT_MAX_N = 50
 #: Largest sample size (per group / number of non-zero differences) for which the exact
 #: permutation distribution of the *tied* mid-ranks is used automatically. Up to this size
-#: there are at most C(14, 7) = 3432 splits (2^7 = 128 sign patterns) and the normal
+#: there are at most C(12, 6) = 924 splits (2^6 = 64 sign patterns) and the normal
 #: approximation is at its worst; larger tied samples use the normal approximation.
-EXACT_TIES_MAX_N = 7
+EXACT_TIES_MAX_N = 6
 #: Largest number of pairwise differences / Walsh averages held in memory for the
 #: Hodges-Lehmann estimate.
 _MAX_PAIRS = 10_000_000
@@ -482,7 +482,7 @@ def _pairing_check(corr: dict[str, Any], label: str = "Pearson r") -> Assumption
     correlation makes pairing worthwhile. The estimates table shows the two-sided P value
     of the same correlation; the text names both so the two numbers are not confused.
     """
-    name = "Effective pairing (correlation between pairs)"
+    name = "Effective pairing (correlation between pairs; one-tailed P)"
     r, p1, p2 = corr["r"], corr["p_positive"], corr["p"]
     if r is None:
         return AssumptionCheck(name=name, status="warn",
@@ -588,7 +588,7 @@ def ttest_paired(a: Iterable[Any], b: Iterable[Any], *, names: tuple[str, str] =
         Parameter(name=f"Mean of differences ({na} - {nb})", value=md, se=se_out, ci_low=ci_low,
                   ci_high=ci_high, ci_level=level, statistic=t, p_value=p,
                   unit_note="Two-sided confidence interval."),
-        Parameter(name="Correlation between pairs (Pearson r)", value=corr["r"], ci_low=corr["ci_low"],
+        Parameter(name="Correlation between pairs (Pearson r; two-tailed P)", value=corr["r"], ci_low=corr["ci_low"],
                   ci_high=corr["ci_high"], ci_level=level, p_value=corr["p"],
                   unit_note="Two-sided P value; CI by the Fisher z transformation."),
     ]
@@ -664,10 +664,10 @@ def ttest_one_sample(x: Iterable[Any], popmean: float = 0.0, *, name: str = "Sam
     z = rs.arrays[0]
     mean_z = float(z.mean())
     mu_z = rs.to_scaled_location(mu)
-    if not math.isfinite(mu_z):
-        raise StatsError("The hypothetical value is too far from the data (by more than 300 orders of "
-                         "magnitude) for the difference to be computed.")
     sd_z = 0.0 if is_constant(arr) else float(z.std(ddof=1))
+    if sd_z > 0 and not math.isfinite(mu_z):  # (not needed when there is no t statistic)
+        raise StatsError("The hypothetical value is too far from the data (by more than 300 orders of "
+                         "magnitude relative to their spread) for the t statistic to be computed.")
     se_z = sd_z / math.sqrt(n)
     df = float(n - 1)
     with np.errstate(over="ignore"):
@@ -928,7 +928,7 @@ def mann_whitney(a: Iterable[Any], b: Iterable[Any], *, names: tuple[str, str] =
       and the mean ranks.
     * P value: exact (``method="exact"``, the default choice of ``"auto"`` when there are
       no ties and both groups have at most 50 values, or when there are ties and both
-      groups have at most 7 values: then the permutation distribution of the tied
+      groups have at most 6 values: then the permutation distribution of the tied
       mid-ranks is enumerated) or the normal approximation with tie correction and
       continuity correction (``"asymptotic"``; never reported below the smallest P value
       the exact test can attain). ``extra["p_method"]`` says which was used and
@@ -1443,7 +1443,7 @@ def wilcoxon_signed_rank(a: Iterable[Any], b: Iterable[Any], *, names: tuple[str
     * ``zero_method``: ``"wilcox"`` (default) discards pairs whose difference is exactly
       zero; ``"pratt"`` ranks them with the others and then drops their ranks (Pratt 1959).
     * P value: exact when no two non-zero differences have the same size and there are at
-      most 50 of them; exact also with tied differences when there are at most 7 non-zero
+      most 50 of them; exact also with tied differences when there are at most 6 non-zero
       differences (enumeration of the tied mid-ranks over all sign patterns); otherwise
       the normal approximation with tie correction and continuity correction (never
       reported below the smallest attainable value 2 / 2^n). ``extra["p_method"]`` says
@@ -1484,7 +1484,7 @@ def wilcoxon_signed_rank(a: Iterable[Any], b: Iterable[Any], *, names: tuple[str
         parameters_extra=[
             Parameter(name="Median of differences", value=_describe_clean(d, level)["median"],
                       unit_note="Plain sample median of the differences, for reference."),
-            Parameter(name="Correlation between pairs (Spearman r)", value=corr["r"], p_value=corr["p"],
+            Parameter(name="Correlation between pairs (Spearman r; two-tailed P)", value=corr["r"], p_value=corr["p"],
                       unit_note="Two-sided P value (t approximation)."),
         ],
         methods_prefix=(f"Paired measurements were compared with the Wilcoxon matched-pairs signed-rank test "

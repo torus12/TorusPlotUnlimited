@@ -276,13 +276,16 @@ def test_paired_t_first_principles_and_extras():
     assert res.effect_sizes[1].name == "Hedges' g_z (paired)"
     # effectiveness of pairing: Pearson r with the usual two-sided P and Fisher-z CI
     r_ref = stats.pearsonr(P1, P2)
-    corr = res.parameter("Correlation between pairs (Pearson r)")
+    corr = res.parameter("Correlation between pairs (Pearson r; two-tailed P)")
     assert corr.value == pytest.approx(r_ref.statistic, rel=1e-10)
     assert corr.p_value == pytest.approx(r_ref.pvalue, rel=1e-8)
     ci = r_ref.confidence_interval(0.95)
     assert (corr.ci_low, corr.ci_high) == pytest.approx((ci.low, ci.high), rel=1e-8)
     pairing = res.assumptions[1]
     assert pairing.status == "pass" and "effective" in pairing.detail
+    # the check carries the ONE-tailed P, the estimate row the TWO-tailed P: both are labelled
+    assert "one-tailed P" in pairing.name and "two-tailed P" in corr.name
+    assert "one-tailed" in pairing.detail and "two-tailed" in pairing.detail
     assert pairing.p_value == pytest.approx(stats.pearsonr(P1, P2, alternative="greater").pvalue, rel=1e-8)
     assert res.assumptions[0].target == "Difference (before - after)"
     assert res.assumptions[0].p_value == pytest.approx(stats.shapiro(d).pvalue)
@@ -306,7 +309,7 @@ def test_paired_t_pairing_checks_and_degenerate_inputs():
             break
     assert weak is not None and "weakly" in weak.assumptions[1].detail
     perfect = _full(tg.ttest_paired([1.0, 2.0, 3.0, 5.0], [2.0, 4.0, 6.0, 10.0]))
-    assert perfect.parameter("Correlation between pairs (Pearson r)").value == pytest.approx(1.0)
+    assert perfect.parameter("Correlation between pairs (Pearson r; two-tailed P)").value == pytest.approx(1.0)
 
     const_diff = _full(tg.ttest_paired([1.0, 2.0, 3.0], [2.0, 3.0, 4.0]))
     assert const_diff.statistic is None and const_diff.p_value is None
@@ -704,7 +707,7 @@ def test_wilcoxon_pseudo_median_and_exact_ci():
     assert k == 11
     assert res.parameter("Median of differences").value == pytest.approx(np.median(d))
     rho = stats.spearmanr(P1, P2)
-    sp = res.parameter("Correlation between pairs (Spearman r)")
+    sp = res.parameter("Correlation between pairs (Spearman r; two-tailed P)")
     assert sp.value == pytest.approx(rho.statistic, rel=1e-10) and sp.p_value == pytest.approx(rho.pvalue, rel=1e-8)
     rb = es.rank_biserial_paired(d)
     assert res.effect_sizes[0].value == pytest.approx(rb.value)
@@ -840,12 +843,12 @@ def test_rank_tests_exact_p_with_ties_equals_brute_force_enumeration(alt):
     """Small tied samples get the exact conditional P value (permutation distribution of
     the mid-ranks); it must equal brute-force enumeration."""
     cases = [([1.0, 1.0, 1.0], [2.0, 2.0, 2.0]), ([1.0, 2.0, 2.0, 3.0], [2.0, 3.0, 3.0, 5.0, 5.0]),
-             ([0.0, 1.0, 1.0, 1.0, 4.0, 4.0, 6.0], [1.0, 4.0, 5.0, 5.0, 6.0, 7.0, 7.0])]
+             ([0.0, 1.0, 1.0, 4.0, 4.0, 6.0], [1.0, 4.0, 5.0, 5.0, 7.0, 7.0])]
     for a, b in cases:
         res = tg.mann_whitney(a, b, alternative=alt)
         assert res.extra["exact"] and res.extra["ties"]
         assert res.p_value == pytest.approx(_brute_rank_sum_p(np.array(a), np.array(b), alt), rel=1e-12)
-    for d in ([1.0, 1.0, 1.0, 1.0, 1.0], [1.0, -1.0, 2.0, 2.0, 3.0, 0.0], [2.0, 2.0, -2.0, 3.0, 5.0, 5.0, 5.0]):
+    for d in ([1.0, 1.0, 1.0, 1.0, 1.0], [1.0, -1.0, 2.0, 2.0, 3.0, 0.0], [2.0, 2.0, -2.0, 3.0, 5.0, 5.0]):
         res = tg.wilcoxon_one_sample(d, 0.0, alternative=alt)
         assert res.extra["exact"] and res.extra["ties"]
         assert res.p_value == pytest.approx(_brute_signed_rank_p(d, alt), rel=1e-12)
@@ -876,6 +879,9 @@ def test_rank_tests_with_random_ties_and_zeros_match_scipy():
             assert res.p_value == pytest.approx(_brute_rank_sum_p(a, b, alt), rel=1e-9, abs=1e-12)
             enumerated += 1
             continue
+        if res.extra["p_method"] == tg._P_FLOORED:  # approximation below the attainable minimum
+            assert res.p_value == res.extra["smallest_attainable_p"]
+            continue
         ref = stats.mannwhitneyu(a, b, alternative=alt, use_continuity=True,
                                  method="exact" if res.extra["exact"] else "asymptotic")
         assert res.p_value == pytest.approx(ref.pvalue, rel=1e-9, abs=1e-12)
@@ -899,6 +905,9 @@ def test_rank_tests_with_random_ties_and_zeros_match_scipy():
                 enumerated += 1
                 continue
             ref = stats.wilcoxon(d[d != 0], alternative=alt, method="exact")
+        elif res.extra["p_method"] == tg._P_FLOORED:  # approximation below the attainable minimum
+            assert res.p_value == res.extra["smallest_attainable_p"]
+            continue
         else:
             ref = stats.wilcoxon(d, alternative=alt, zero_method=zero_method, correction=True,
                                  method="asymptotic")

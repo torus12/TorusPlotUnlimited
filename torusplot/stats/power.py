@@ -13,8 +13,10 @@ Effect sizes
 * ANOVA: Cohen's f = (SD of the group means) / (common within-group SD);
   f^2 = eta^2 / (1 - eta^2). Benchmarks: 0.10 small, 0.25 medium, 0.40 large.
 
-Sample sizes are always *per group* (pairs for a paired design). Required sample sizes are
-reported both exactly (fractional) and rounded up to the next whole subject.
+Sample sizes are *per group* (pairs for a paired design, values for a one-sample design;
+for an unpaired design with unequal groups, ``n`` is the size of group 1 and group 2 has
+``ratio`` x n). Solved sample sizes are reported both exactly (fractional) and rounded up
+to the next whole subject; sample sizes entered by the user are reported as entered.
 
 References: Cohen J (1988) *Statistical Power Analysis for the Behavioral Sciences*,
 2nd ed.; Cohen J (1992) A power primer. *Psychol Bull* 112:155-159.
@@ -247,7 +249,8 @@ def power_ttest(
     if ratio <= 0:
         raise StatsError("The ratio of group sizes (n2 / n1) must be positive.")
     n_min = max(2.0, 2.0 / ratio) if design == "unpaired" else 2.0
-    unit = {"unpaired": "per group", "paired": "pairs", "one-sample": "values"}[design]
+    unit = {"unpaired": "per group" if ratio == 1.0 else "group 1", "paired": "pairs",
+            "one-sample": "values"}[design]
     warnings: list[str] = []
 
     def pw(d: float, size: float) -> float:
@@ -322,7 +325,8 @@ def power_ttest(
         Parameter(name="Effect size (Cohen's d)", value=d,
                   unit_note=("Solved." if unknown == "effect_size" else "As entered.")
                             + (" For paired designs d = mean difference / SD of the differences." if design == "paired" else "")),
-        Parameter(name=f"Sample size, exact ({unit})", value=n_exact,
+        Parameter(name=f"Sample size, exact ({unit})" if unknown == "n" else f"Sample size ({unit})",
+                  value=n_exact,
                   unit_note="Solved (fractional)." if unknown == "n" else "As entered."),
     ]
     if unknown == "n":
@@ -363,10 +367,18 @@ def power_ttest(
             f"if the true effect is exactly that large; the chance of missing it is {_pct(1 - solved_power)}."
         )
     else:
+        if alternative == "less":
+            reach = (f"effects of size {d_text} or more negative (a decrease of at least "
+                     f"{fmt(abs(d), 3)} SD). True effects closer to zero will usually be missed")
+        elif alternative == "greater":
+            reach = (f"effects of size {d_text} or larger. Smaller true effects will usually be "
+                     "missed")
+        else:
+            reach = (f"effects of size {d_text} or larger in magnitude, in either direction. True "
+                     "effects closer to zero will usually be missed")
         interpretation = (
             f"With {n_text}, a {tails} {test} at alpha = {alpha:g} has {_pct(target)} power to detect "
-            f"effects of size {d_text} or larger. Smaller true effects will usually be missed with "
-            "this sample size."
+            f"{reach} with this sample size."
         )
     n_dict: dict[str, int] = {}
     if unknown == "n" or integer_n:
@@ -481,7 +493,8 @@ def power_anova(
         Parameter(name="Effect size (Cohen's f)", value=f,
                   unit_note=("Solved." if unknown == "effect_size" else "As entered.")
                             + f" Equivalent to eta squared = {fmt(eta2, 3)}."),
-        Parameter(name="Sample size per group, exact", value=n_exact,
+        Parameter(name="Sample size per group, exact" if unknown == "n" else "Sample size per group",
+                  value=n_exact,
                   unit_note="Solved (fractional)." if unknown == "n" else "As entered."),
     ]
     if unknown == "n":
@@ -559,7 +572,11 @@ def power_curve(
     n_max: int | None = None,
     target_power: float = 0.8,
 ) -> StatResult:
-    """Power as a function of the sample size per group, for plotting.
+    """Power as a function of the sample size, for plotting.
+
+    The x axis is the sample size per group (ANOVA; unpaired design with equal groups),
+    the size of group 1 (unpaired design with ``ratio`` != 1; group 2 has ``ratio`` x n),
+    the number of pairs (paired) or the number of values (one-sample).
 
     ``design`` is ``"unpaired"``, ``"paired"``, ``"one-sample"`` or ``"anova"`` (then
     ``k_groups`` is required and ``effect_size`` is Cohen's f). ``extra["curve"]`` is
@@ -614,10 +631,23 @@ def power_curve(
             xs = sorted({float(round(v)) for v in np.linspace(start, top, 300)})
     ys = [pw(v) for v in xs]
     n_needed = solved.extra["n"]
+    if design == "paired":
+        x_what, x_label, needs = "the number of pairs", "Number of pairs", f"{n_needed} pairs"
+    elif design == "one-sample":
+        x_what, x_label, needs = "the number of values", "Number of values", f"{n_needed} values"
+    elif design == "unpaired" and solved.extra["ratio"] != 1.0:
+        n2_needed = solved.extra["n2"]
+        x_what = (f"the size of group 1 (group 2 has {fmt(solved.extra['ratio'])} times as many "
+                  "subjects)")
+        x_label = "Sample size of group 1"
+        needs = (f"{n_needed} subjects in group 1 and {n2_needed} in group 2 "
+                 f"({solved.extra['n_total']} in total)")
+    else:
+        x_what, x_label, needs = "the sample size per group", "Sample size per group", f"{n_needed} per group"
     interpretation = (
         f"Power of the {label} at alpha = {alpha:g} for an effect size of {fmt(es_value, 3)}, as a function "
-        f"of the sample size per group (from {fmt(xs[0])} to {fmt(xs[-1])}). Power rises from "
-        f"{_pct(ys[0])} to {_pct(ys[-1])}; {_pct(target_power)} power needs {n_needed} per group."
+        f"of {x_what} (from {fmt(xs[0])} to {fmt(xs[-1])}). Power rises from "
+        f"{_pct(ys[0])} to {_pct(ys[-1])}; {_pct(target_power)} power needs {needs}."
     )
     return StatResult(
         analysis="power_curve",
@@ -632,14 +662,14 @@ def power_curve(
         parameters=[
             Parameter(name="Effect size", value=es_value,
                       unit_note="Cohen's f." if design == "anova" else "Cohen's d."),
-            Parameter(name=f"Sample size per group for {_pct(target_power)} power", value=n_needed),
+            Parameter(name=f"{x_label} for {_pct(target_power)} power", value=n_needed),
         ],
         interpretation=interpretation,
         methods_text=solved.methods_text,
         citations=list(_CITATIONS),
         extra={
             "curve": {"x": xs, "y": ys},
-            "x_label": "Sample size per group" if design in {"unpaired", "anova"} else "Sample size",
+            "x_label": x_label,
             "y_label": "Power",
             "target": {"power": target_power, "n": n_needed, "n_exact": solved.extra["n_exact"]},
             "design": design, "effect_size": es_value, "alpha": alpha,
