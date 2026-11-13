@@ -110,7 +110,7 @@ Done = available in the app and tested. Partial = available with a stated limita
 | `tools/check_licenses.py` | pass (78 packages: runtime closure, both lock files, optional extras, bundled-binary reviews) |
 | `tools/check_lock.py` | pass |
 | App launched headless (Chromium); all 8 pages loaded with data and a figure | pass, 0 page errors |
-| GitHub Actions CI (windows-latest + ubuntu-latest; Python 3.11 + 3.12) | __CI__ |
+| GitHub Actions CI (windows-latest + ubuntu-latest; Python 3.11 + 3.12) | green on all 4 jobs (run 43518709365) |
 
 What the suite covers:
 
