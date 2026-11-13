@@ -385,7 +385,7 @@ Example: a synthetic pilot table with 3 values per group, one of them extreme. T
 
 - The smallest group has n = 3. With so few values no test can check its own assumptions reliably; rely on what is known about this kind of measurement and report individual points.
 - If each row is the same subject measured twice, the data are paired: ask for the recommendation again with 'paired' switched on.
-- With n = 3 or fewer per group a two-sided Mann-Whitney test cannot give P < 0.05; the test is recommended for validity, but it has no power here.
+- With n = 3 per group a two-sided Mann-Whitney test cannot give P < 0.05: even when the two groups do not overlap at all the exact P value is 0.1. The test is recommended for validity, but it has no power here; collect more data if you can.
 
 The check results in a recommendation can differ slightly from the checks printed with the analysis
 itself. For three or more groups the recommendation tests residuals that are first standardised
@@ -587,7 +587,7 @@ Result ID     sr_xxxxxxxx  (random; yours will differ)
 Statistic     t(14) = 4.227
 P value       0.0008  ***  (two-sided; significant at alpha = 0.05)
 Effect size   Cohen's d = 2.113 (95% CI 0.8407 to 3.34; large)
-Estimates     Mean difference (Bulk mixing - Sonication) = 22.77 (95% CI 11.22 to 34.33; P = 0.0008)
+Estimates     Mean difference (Bulk mixing - Sonication) = 22.78 (95% CI 11.22 to 34.33; P = 0.0008)
               Mean of Bulk mixing = 145.1 (95% CI 136.4 to 153.9)
               Mean of Sonication = 122.4 (95% CI 113.1 to 131.6)
 Sample size   Bulk mixing: 8; Sonication: 8  (total 16)
@@ -599,11 +599,11 @@ Checks        PASS  Normality (Shapiro-Wilk) [Bulk mixing], P = 0.1712
 
 What TorusPlot writes under the result:
 
-> The mean of Bulk mixing (145.1, n = 8) was 22.77 higher than the mean of Sonication (122.4, n = 8); difference Bulk mixing - Sonication = 22.77 (95% CI 11.22 to 34.33). By the unpaired t test this difference is statistically significant (P = 0.0008, alpha = 0.05); t(14) = 4.227. This is evidence that the population means differ. Cohen's d = 2.11 (95% CI 0.8407 to 3.34), a large effect by Cohen's conventions.
+> The mean of Bulk mixing (145.1, n = 8) was 22.78 higher than the mean of Sonication (122.4, n = 8); difference Bulk mixing - Sonication = 22.78 (95% CI 11.22 to 34.33). By the unpaired t test this difference is statistically significant (P = 0.0008, alpha = 0.05); t(14) = 4.227. This is evidence that the population means differ. Cohen's d = 2.11 (95% CI 0.8407 to 3.34), a large effect by Cohen's conventions.
 
 **How to read it.**
 
-- Mean difference (Bulk mixing - Sonication) = 22.77 (95% CI 11.22 to 34.33; P = 0.0008). This is first group minus second group. The 95% CI is the range of true differences that is compatible with the data.
+- Mean difference (Bulk mixing - Sonication) = 22.78 (95% CI 11.22 to 34.33; P = 0.0008). This is first group minus second group. The 95% CI is the range of true differences that is compatible with the data.
 - t(14) = 4.227, P = 0.0008: the difference is statistically significant at alpha = 0.05. The P value is the probability of a difference at least this large if the two population means were equal.
 - Cohen's d = 2.113 (95% CI 0.8407 to 3.34). This is the difference in units of the pooled SD. The interval is wide because n is small.
 - Checks: normality of each group and equal variance. Both pass here.
@@ -614,7 +614,7 @@ What TorusPlot writes under the result:
 
 > The two groups were compared with an unpaired Student's t test (two-tailed, alpha = 0.05).
 
-Numbers to quote with it: t(14) = 4.227; P = 0.0008; Mean difference (Bulk mixing - Sonication) = 22.77 (95% CI 11.22 to 34.33); Cohen's d = 2.113 (95% CI 0.8407 to 3.34). Always add the sample size (n) of every group.
+Numbers to quote with it: t(14) = 4.227; P = 0.0008; Mean difference (Bulk mixing - Sonication) = 22.78 (95% CI 11.22 to 34.33); Cohen's d = 2.113 (95% CI 0.8407 to 3.34). Always add the sample size (n) of every group.
 
 #### Welch's t test
 
@@ -683,10 +683,10 @@ Statistic     t(9) = 9.744
 P value       <0.0001  ****  (two-sided; significant at alpha = 0.05)
 Effect size   Cohen's d_z (paired) = 3.081 (95% CI 1.54 to 4.599; large)
 Estimates     Mean of differences (Before - After) = 88.9 (95% CI 68.26 to 109.5; P < 0.0001)
-              Correlation between pairs (Pearson r) = 0.9 (95% CI 0.624 to 0.9764; P = 0.0004)
+              Correlation between pairs (Pearson r; two-tailed P) = 0.9 (95% CI 0.624 to 0.9764; P = 0.0004)
 Sample size   Before: 10; After: 10  (total 10)
 Checks        PASS  Normality (Shapiro-Wilk) [Difference (Before - After)], P = 0.7543
-              PASS  Effective pairing (correlation between pairs), P = 0.0002
+              PASS  Effective pairing (correlation between pairs; one-tailed P), P = 0.0002
               plus 1 design assumption(s) stated in the app (they cannot be checked from the numbers)
 ```
 
@@ -698,7 +698,7 @@ What TorusPlot writes under the result:
 
 - Mean of differences (Before - After) = 88.9 (95% CI 68.26 to 109.5; P < 0.0001). This is the mean of the within-animal differences (first column minus second column).
 - t(9) = 9.744, P < 0.0001: statistically significant.
-- Correlation between pairs (Pearson r) = 0.9 (95% CI 0.624 to 0.9764; P = 0.0004). Pairing helps when this correlation is positive. It was effective here.
+- Correlation between pairs (Pearson r; two-tailed P) = 0.9 (95% CI 0.624 to 0.9764; P = 0.0004). Pairing helps when this correlation is positive. It was effective here.
 - Cohen's d_z (paired) = 3.081. For paired data this is the mean difference divided by the SD of the differences (d_z). It is not comparable with Cohen's d from an unpaired test.
 - The normality check is on the differences, not on each column.
 
@@ -773,7 +773,7 @@ Test          Mann-Whitney U test
 Result ID     sr_xxxxxxxx  (random; yours will differ)
 Statistic     U = 3
 P value       0.0011  **  (two-sided; significant at alpha = 0.05)
-Effect size   rank-biserial r = 0.9062 (95% CI 0.7273 to 0.9698; large)
+Effect size   rank-biserial r = 0.9062 (95% CI 0.3719 to 0.9877; large)
 Estimates     Hodges-Lehmann difference (Bulk mixing - Sonication) = 21.15 (95% CI 11.7 to 34.2)
               Difference between medians (Bulk mixing - Sonication) = 18.85
 Sample size   Bulk mixing: 8; Sonication: 8  (total 16)
@@ -783,14 +783,14 @@ Checks        PASS  Similar distribution shape (needed to interpret the result a
 
 What TorusPlot writes under the result:
 
-> By the Mann-Whitney test, values in Bulk mixing tended to be larger than in Sonication (median 141.8 vs 123; mean rank 12.12 vs 4.875; n = 8 and 8); the difference between the two distributions is statistically significant (P = 0.0011, alpha = 0.05); U = 3, exact P value. The Hodges-Lehmann estimate of the shift Bulk mixing - Sonication is 21.15 (95% CI 11.7 to 34.2). Rank-biserial r = 0.906 (95% CI 0.7273 to 0.9698), a large effect by Cohen's conventions. The test compares the distributions (mean ranks); it compares medians only if both groups have distributions of the same shape.
+> By the Mann-Whitney test, values in Bulk mixing tended to be larger than in Sonication (median 141.8 vs 123; mean rank 12.12 vs 4.875; n = 8 and 8); the difference between the two distributions is statistically significant (P = 0.0011, alpha = 0.05); U = 3, exact P value. The Hodges-Lehmann estimate of the shift Bulk mixing - Sonication is 21.15 (95% CI 11.7 to 34.2). Rank-biserial r = 0.906 (95% CI 0.3719 to 0.9877), a large effect by Cohen's conventions. The test compares the distributions (mean ranks); it compares medians only if both groups have distributions of the same shape.
 
 **How to read it.**
 
 - The test ranks all values together and asks whether one group tends to have the larger values. U = 3, P = 0.0011, with an exact P value: statistically significant.
 - Hodges-Lehmann difference (Bulk mixing - Sonication) = 21.15 (95% CI 11.7 to 34.2). The Hodges-Lehmann estimate is the median of all pairwise differences between the groups. It is the shift that the test is about.
 - Difference between medians (Bulk mixing - Sonication) = 18.85. This is a different number and has no confidence interval.
-- rank-biserial r = 0.9062 (95% CI 0.7273 to 0.9698). A value of +1 means every value in the first group is larger than every value in the second; 0 means no tendency.
+- rank-biserial r = 0.9062 (95% CI 0.3719 to 0.9877). A value of +1 means every value in the first group is larger than every value in the second; 0 means no tendency.
 
 **What not to conclude.** It is not automatically a test of medians. It compares medians only if the two distributions have the same shape. With 3 values per group the smallest possible two-sided P value is 0.10, so the test cannot reach 0.05.
 
@@ -798,7 +798,7 @@ What TorusPlot writes under the result:
 
 > The two groups were compared with the Mann-Whitney U test (two-tailed, alpha = 0.05; exact P value); the shift was estimated with the Hodges-Lehmann estimator.
 
-Numbers to quote with it: U = 3; P = 0.0011; Hodges-Lehmann difference (Bulk mixing - Sonication) = 21.15 (95% CI 11.7 to 34.2); rank-biserial r = 0.9062 (95% CI 0.7273 to 0.9698). Always add the sample size (n) of every group.
+Numbers to quote with it: U = 3; P = 0.0011; Hodges-Lehmann difference (Bulk mixing - Sonication) = 21.15 (95% CI 11.7 to 34.2); rank-biserial r = 0.9062 (95% CI 0.3719 to 0.9877). Always add the sample size (n) of every group.
 
 #### Wilcoxon matched-pairs signed-rank test
 
@@ -818,18 +818,18 @@ Test          Wilcoxon matched-pairs signed-rank test
 Result ID     sr_xxxxxxxx  (random; yours will differ)
 Statistic     W = 55
 P value       0.0020  **  (two-sided; significant at alpha = 0.05)
-Effect size   matched-pairs rank-biserial r = 1 (95% CI 1 to 1; large)
+Effect size   matched-pairs rank-biserial r = 1 (95% CI 0.3595 to 1; large)
 Estimates     Hodges-Lehmann median difference (Before - After) = 88 (95% CI 67.5 to 110)
               Median of differences = 86
-              Correlation between pairs (Spearman r) = 0.8171 (P = 0.0039)
+              Correlation between pairs (Spearman r; two-tailed P) = 0.8171 (P = 0.0039)
 Sample size   Before: 10; After: 10  (total 10)
-Checks        PASS  Effective pairing (correlation between pairs), P = 0.0020
+Checks        PASS  Effective pairing (correlation between pairs; one-tailed P), P = 0.0020
               plus 2 design assumption(s) stated in the app (they cannot be checked from the numbers)
 ```
 
 What TorusPlot writes under the result:
 
-> By the Wilcoxon matched-pairs signed-rank test, Before tended to be larger than After (sum of positive ranks 55, sum of negative ranks 0, 10 non-zero differences); this is statistically significant (P = 0.0020, alpha = 0.05); W = 55, exact P value. Hodges-Lehmann median difference (Before - After): 88 (95% CI 67.5 to 110). Matched-pairs rank-biserial r = 1 (95% CI 1 to 1), a large effect by Cohen's conventions.
+> By the Wilcoxon matched-pairs signed-rank test, Before tended to be larger than After (sum of positive ranks 55, sum of negative ranks 0, 10 non-zero differences); this is statistically significant (P = 0.0020, alpha = 0.05); W = 55, exact P value. Hodges-Lehmann median difference (Before - After): 88 (95% CI 67.5 to 110). Matched-pairs rank-biserial r = 1 (95% CI 0.3595 to 1), a large effect by Cohen's conventions.
 
 **How to read it.**
 
@@ -863,7 +863,7 @@ Test          Wilcoxon signed-rank test (one sample)
 Result ID     sr_xxxxxxxx  (random; yours will differ)
 Statistic     W = 21
 P value       0.3077  ns  (two-sided; not significant at alpha = 0.05)
-Effect size   matched-pairs rank-biserial r = 0.3818 (95% CI -0.2886 to 0.801; medium)
+Effect size   matched-pairs rank-biserial r = 0.3818 (95% CI -0.3167 to 0.7853; medium)
 Estimates     Hodges-Lehmann pseudo-median of Before = 422 (95% CI 376 to 474)
               Median of Before = 417.5
               Median minus hypothetical value = 17.5
@@ -873,11 +873,11 @@ Checks        plus 2 design assumption(s) stated in the app (they cannot be chec
 
 What TorusPlot writes under the result:
 
-> By the one-sample Wilcoxon signed-rank test, Before tended to be larger than the hypothetical median 400 (sum of positive ranks 38, sum of negative ranks 17, 10 non-zero differences); this is not statistically significant (P = 0.3077, alpha = 0.05); W = 21, approximate P value. Hodges-Lehmann pseudo-median of Before: 422 (95% CI 376 to 474). Matched-pairs rank-biserial r = 0.382 (95% CI -0.2886 to 0.801), a medium effect by Cohen's conventions.
+> By the one-sample Wilcoxon signed-rank test, Before tended to be larger than the hypothetical median 400 (sum of positive ranks 38, sum of negative ranks 17, 10 non-zero differences); this is not statistically significant (P = 0.3077, alpha = 0.05); W = 21, approximate P value. Hodges-Lehmann pseudo-median of Before: 422 (95% CI 376 to 474). Matched-pairs rank-biserial r = 0.382 (95% CI -0.3167 to 0.7853), a medium effect by Cohen's conventions.
 
 Warnings shown with this result:
 
-- Some differences are tied in size, so an exact P value is not available; the normal approximation with tie correction was used.
+- Some differences are tied in size, so the tabulated exact distribution does not apply; the normal approximation with tie correction was used.
 
 **How to read it.**
 
@@ -891,7 +891,7 @@ Warnings shown with this result:
 
 > The median was compared with the hypothetical value 400 using the Wilcoxon signed-rank test (two-tailed, alpha = 0.05; normal approximation with tie and continuity correction; zero differences discarded).
 
-Numbers to quote with it: W = 21; P = 0.3077; Hodges-Lehmann pseudo-median of Before = 422 (95% CI 376 to 474); matched-pairs rank-biserial r = 0.3818 (95% CI -0.2886 to 0.801). Always add the sample size (n) of every group.
+Numbers to quote with it: W = 21; P = 0.3077; Hodges-Lehmann pseudo-median of Before = 422 (95% CI 376 to 474); matched-pairs rank-biserial r = 0.3818 (95% CI -0.3167 to 0.7853). Always add the sample size (n) of every group.
 
 ### 4.4 Compare three or more groups
 
@@ -1186,7 +1186,7 @@ Family of comparisons: 9 comparisons: the levels of Formulation compared with ea
 
 What TorusPlot writes under the result:
 
-> Two-way ANOVA of value by Time and Formulation (36 values, Type III sums of squares). Interaction Time x Formulation: statistically significant (P < 0.0001, alpha = 0.05), F(4, 27) = 37.43, partial eta squared = 0.847. Main effect of Formulation: statistically significant (P < 0.0001, alpha = 0.05), F(2, 27) = 183.4, partial eta squared = 0.931. Main effect of Time: statistically significant (P < 0.0001, alpha = 0.05), F(2, 27) = 151.9, partial eta squared = 0.918. Because an interaction is significant there is evidence that the effect of one factor depends on the level of the other; interpret the main effects with caution and look at the comparisons within each level. Multiple comparisons (Tukey HSD): 7 of 9 comparisons were significant at alpha = 0.05.
+> Two-way ANOVA of the measured values by Time and Formulation (36 values, Type III sums of squares). Interaction Time x Formulation: statistically significant (P < 0.0001, alpha = 0.05), F(4, 27) = 37.43, partial eta squared = 0.847. Main effect of Formulation: statistically significant (P < 0.0001, alpha = 0.05), F(2, 27) = 183.4, partial eta squared = 0.931. Main effect of Time: statistically significant (P < 0.0001, alpha = 0.05), F(2, 27) = 151.9, partial eta squared = 0.918. Because an interaction is significant there is evidence that the effect of one factor depends on the level of the other; interpret the main effects with caution and look at the comparisons within each level. Multiple comparisons (Tukey HSD): 7 of 9 comparisons were significant at alpha = 0.05.
 
 **How to read it.**
 
@@ -1501,7 +1501,7 @@ Family of comparisons: 3 comparisons: the groups of Treatment compared at each l
 
 What TorusPlot writes under the result:
 
-> Mixed-design ANOVA of value with Treatment as between-subjects factor (2 groups) and Day as within-subjects factor (3 levels), 10 subjects. Interaction Treatment x Day: statistically significant (P < 0.0001, alpha = 0.05), F(1.888, 15.1) = 35.51, Greenhouse-Geisser corrected (epsilon = 0.944), partial eta squared = 0.816. Main effect of Day: statistically significant (P < 0.0001, alpha = 0.05), F(1.888, 15.1) = 229.6, Greenhouse-Geisser corrected (epsilon = 0.944), partial eta squared = 0.966. Main effect of Treatment: statistically significant (P = 0.0493, alpha = 0.05), F(1, 8) = 5.359, partial eta squared = 0.401. The significant interaction is evidence that the change across Day differs between the groups of Treatment; interpret the main effects with caution. Multiple comparisons (Holm): 1 of 3 were significant at alpha = 0.05.
+> Mixed-design ANOVA of the measured values with Treatment as between-subjects factor (2 groups) and Day as within-subjects factor (3 levels), 10 subjects. Interaction Treatment x Day: statistically significant (P < 0.0001, alpha = 0.05), F(1.888, 15.1) = 35.51, Greenhouse-Geisser corrected (epsilon = 0.944), partial eta squared = 0.816. Main effect of Day: statistically significant (P < 0.0001, alpha = 0.05), F(1.888, 15.1) = 229.6, Greenhouse-Geisser corrected (epsilon = 0.944), partial eta squared = 0.966. Main effect of Treatment: statistically significant (P = 0.0493, alpha = 0.05), F(1, 8) = 5.359, partial eta squared = 0.401. The significant interaction is evidence that the change across Day differs between the groups of Treatment; interpret the main effects with caution. Multiple comparisons (Holm): 1 of 3 were significant at alpha = 0.05.
 
 **How to read it.**
 
@@ -1959,7 +1959,7 @@ ANOVA table:
 
 What TorusPlot writes under the result:
 
-> The more complex model (Dose-response, four parameters (X is dose)) does not fit significantly better than the simpler one (Dose-response, three parameters (X is dose, standard slope)): F(1, 23) = 0.9745, P = 0.3338. The simpler model is preferred, because a simpler model is kept unless P < 0.05. By AICc the simpler model is more likely to be correct (difference in AICc = 1.92; probability 72.3% that it is the better of the two). A statistical preference is not proof: also check that the preferred fit is scientifically sensible.
+> The more complex model (Dose-response, four parameters (X is dose)) does not fit significantly better than the simpler one (Dose-response, three parameters (X is dose, standard slope)): F(1, 23) = 0.9745, P = 0.3338. The simpler model is preferred, because a simpler model is kept unless P < 0.05. By AICc the simpler model is more likely to be correct (difference in AICc = 1.92; probability 72.3% that it is the better of the two); a difference below 2 is weak evidence, so the data do not clearly distinguish the two models. A statistical preference is not proof: also check that the preferred fit is scientifically sensible.
 
 **How to read it.**
 
@@ -2233,7 +2233,7 @@ What TorusPlot writes under the result:
 
 **Report it like this.** TorusPlot writes this methods sentence for you:
 
-> A linear trend in proportions across Dose was tested with the Cochran-Armitage chi-square test for trend (alpha = 0.05).
+> A linear trend in proportions across Dose was tested with the Cochran-Armitage chi-square test for trend (equally spaced category scores; alpha = 0.05).
 
 Numbers to quote with it: chi2(1) = 16.37; P < 0.0001; Slope = 0.2; r (linear trend) = 0.4523. Always add the sample size (n) of every group.
 
@@ -2416,7 +2416,7 @@ Alpha                                   0.05
 ```text
 Power analysis: unpaired t test
 Effect size (Cohen's d)                 0.8
-Sample size, exact (per group)          5
+Sample size (per group)                 5
 Sample size of group 2                  5
 Total sample size                       10
 Power                                   0.2007
@@ -2957,7 +2957,7 @@ The messages below are the real texts TorusPlot shows. In the app they follow th
 
 | The app says | Message | What to do |
 |---|---|---|
-| The analysis could not be run: | Table 'Digitized' holds APPROXIMATE digitized data (for reference only). Statistical tests are blocked on it. Pass allow_approximate=True (or tick the override box) only if you understand the numbers are estimates read off an image. | The table was digitized from an image. Its numbers are estimates. Use measured data. If you only want a rough reference value, tick *I understand these are estimates read off an image. Allow statistics anyway.* on page **2 Analyze**; the result is then marked APPROXIMATE. |
+| The analysis could not be run: | Table 'Digitized' holds APPROXIMATE values digitized from an image (for reference only), so statistical tests are switched off for it. If a rough reference value is all you need, tick 'I understand these are estimates read off an image. Allow statistics anyway.' on page 2 Analyze; the result is then marked APPROXIMATE. (In a script, pass allow_approximate=True.) | The table was digitized from an image. Its numbers are estimates. Use measured data. If you only want a rough reference value, tick *I understand these are estimates read off an image. Allow statistics anyway.* on page **2 Analyze**; the result is then marked APPROXIMATE. |
 | The analysis could not be run: | 'Fisher's exact test' is not available for a Column table (valid table types: contingency). | The analysis does not fit the table type. In the app the menu already hides such analyses. Re-create the table with the right type (section 2). |
 | The analysis could not be run: | A has 1 value(s); a t test needs at least 2. | A group has too few values. Add replicates. Check that numbers were not read as text (a stray letter or unit in a cell turns it into a missing value). |
 | The analysis could not be run: | Unknown group 'Bulk'. Available groups: ['Bulk mixing', 'Sonication', 'Extrusion', 'Microfluidic']. | The group name does not exist in the table. Pick the group from the list; names are case-sensitive. |

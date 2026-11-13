@@ -48,16 +48,29 @@ BATTERY = {
     ("3", "15"): (138, 110, 168, 160), ("3", "70"): (174, 120, 150, 139), ("3", "125"): (96, 104, 82, 60),
 }
 
-# Crampton EW (1947) J Nutr 33:491-504 (tooth growth in guinea pigs; also Bliss 1952):
-# odontoblast length by supplement (VC = ascorbic acid, OJ = orange juice) and dose (mg/day).
-TOOTH = {
-    ("VC", "0.5"): [4.2, 11.5, 7.3, 5.8, 6.4, 10, 11.2, 11.2, 5.2, 7],
-    ("VC", "1"): [16.5, 16.5, 15.2, 17.3, 22.5, 17.3, 13.6, 14.5, 18.8, 15.5],
-    ("VC", "2"): [23.6, 18.5, 33.9, 25.5, 26.4, 32.5, 26.7, 21.5, 23.3, 29.5],
-    ("OJ", "0.5"): [15.2, 21.5, 17.6, 9.7, 14.5, 10, 8.2, 9.4, 16.5, 9.7],
-    ("OJ", "1"): [19.7, 23.3, 23.6, 26.4, 20, 25.2, 25.8, 21.2, 14.5, 27.3],
-    ("OJ", "2"): [25.5, 26.4, 22.4, 24.5, 24.8, 30.9, 26.4, 27.3, 29.4, 23],
-}
+# Constructed (synthetic) balanced 2 x 3 factorial with n = 10 per cell: every cell is its
+# prescribed mean plus the same zero-sum deviations (in a different order per cell), so every
+# sum of squares is known exactly from the definitions (see _tooth_like_reference below).
+_DEV = np.arange(10) - 4.5  # sums to 0; sum of squares 82.5
+_MEANS = {("VC", "0.5"): 8.0, ("VC", "1"): 16.0, ("VC", "2"): 26.0,
+          ("OJ", "0.5"): 13.0, ("OJ", "1"): 22.0, ("OJ", "2"): 26.0}
+TOOTH = {key: [round(mu + d, 1) for d in np.roll(_DEV, i)] for i, (key, mu) in enumerate(_MEANS.items())}
+
+
+def _tooth_like_reference():
+    """Exact balanced-design sums of squares for TOOTH (Fisher 1925; any ANOVA text)."""
+    n = 10
+    m = np.array([[_MEANS[("VC", d)] for d in ("0.5", "1", "2")], [_MEANS[("OJ", d)] for d in ("0.5", "1", "2")]])
+    grand = m.mean()
+    ss_a = n * 3 * ((m.mean(axis=1) - grand) ** 2).sum()
+    ss_b = n * 2 * ((m.mean(axis=0) - grand) ** 2).sum()
+    ss_cells = n * ((m - grand) ** 2).sum()
+    ss_ab = ss_cells - ss_a - ss_b
+    ss_err = 6 * float((_DEV**2).sum())
+    ms_err = ss_err / 54
+    return {"ss_a": ss_a, "ss_b": ss_b, "ss_ab": ss_ab, "ss_err": ss_err,
+            "f_a": ss_a / 1 / ms_err, "f_b": ss_b / 2 / ms_err, "f_ab": ss_ab / 2 / ms_err,
+            "p_ab": stats.f.sf(ss_ab / 2 / ms_err, 2, 54)}
 
 
 def long_from_cells(cells, names=("A", "B"), value="y"):
@@ -161,22 +174,19 @@ def test_published_montgomery_battery_life():
     assert r.extra["headline_term"] == "Material x Temperature"
 
 
-def test_published_tooth_growth():
+def test_balanced_two_way_matches_exact_sums_of_squares():
     frame = long_from_cells(TOOTH, ("supp", "dose"), "len")
-    # typing check against the well-known cell means and grand mean
-    means = frame.groupby(["supp", "dose"])["len"].mean()
-    assert means[("VC", "0.5")] == pytest.approx(7.98) and means[("OJ", "2")] == pytest.approx(26.06)
-    assert frame["len"].mean() == pytest.approx(18.8133, abs=5e-5)
+    ref = _tooth_like_reference()
     r = fx.anova_twoway(frame, "len", "supp", "dose")
-    assert table_row(r, "supp")["f"] == pytest.approx(15.572, abs=5e-4)
-    assert table_row(r, "dose")["f"] == pytest.approx(92.000, abs=5e-4)
-    assert table_row(r, "supp x dose")["f"] == pytest.approx(4.107, abs=5e-4)
+    assert table_row(r, "supp")["f"] == pytest.approx(ref["f_a"], rel=1e-10)
+    assert table_row(r, "dose")["f"] == pytest.approx(ref["f_b"], rel=1e-10)
+    assert table_row(r, "supp x dose")["f"] == pytest.approx(ref["f_ab"], rel=1e-10)
     assert [table_row(r, s)["df"] for s in ("supp", "dose", "supp x dose", "Residual")] == [1, 2, 2, 54]
-    assert table_row(r, "supp")["ss"] == pytest.approx(205.35, abs=0.005)
-    assert table_row(r, "dose")["ss"] == pytest.approx(2426.43, abs=0.005)
-    assert table_row(r, "supp x dose")["ss"] == pytest.approx(108.32, abs=0.005)
-    assert table_row(r, "Residual")["ss"] == pytest.approx(712.11, abs=0.005)
-    assert table_row(r, "supp x dose")["p"] == pytest.approx(0.02186, abs=5e-6)
+    assert table_row(r, "supp")["ss"] == pytest.approx(ref["ss_a"], rel=1e-10)
+    assert table_row(r, "dose")["ss"] == pytest.approx(ref["ss_b"], rel=1e-10)
+    assert table_row(r, "supp x dose")["ss"] == pytest.approx(ref["ss_ab"], rel=1e-10)
+    assert table_row(r, "Residual")["ss"] == pytest.approx(ref["ss_err"], rel=1e-10)
+    assert table_row(r, "supp x dose")["p"] == pytest.approx(ref["p_ab"], rel=1e-8)
 
 
 # =============================================================================
@@ -771,7 +781,7 @@ def test_missing_values_level_order_and_labels():
     numeric = numeric.sample(frac=1.0, random_state=1)
     r = fx.anova_twoway(numeric, "len", "supp", "dose")
     assert r.extra["levels"]["dose"] == ["0.5", "1", "2"]
-    assert table_row(r, "dose")["f"] == pytest.approx(92.000, abs=5e-4)
+    assert table_row(r, "dose")["f"] == pytest.approx(_tooth_like_reference()["f_b"], rel=1e-10)
     # identical labels for two factors are disambiguated
     r = fx.anova_twoway(numeric, "len", "supp", "dose", factor_labels={"supp": "X", "dose": "X"})
     assert r.extra["factor_labels"] == {"supp": "X (supp)", "dose": "X (dose)"}
@@ -912,7 +922,7 @@ def test_registry_two_way_and_three_way_on_multiple_variables(run):
     tooth = long_from_cells(TOOTH, ("supp", "dose"), "len")
     tooth["dose"] = tooth["dose"].astype(float)
     r = run(MultipleVariablesTable("tooth", tooth), "anova_twoway", value="len", factor_a="supp", factor_b="dose")
-    assert table_row(r, "supp x dose")["f"] == pytest.approx(4.107, abs=5e-4)
+    assert table_row(r, "supp x dose")["f"] == pytest.approx(_tooth_like_reference()["f_ab"], rel=1e-10)
 
 
 def test_registry_ancova(run):
@@ -1057,3 +1067,240 @@ def test_property_ancova_is_invariant_to_covariate_units_and_group_order(seed, k
         assert adj2[g] == pytest.approx(adj[g], rel=1e-6, abs=1e-8)
     assert r2.parameter("Slope: x").value == pytest.approx(r.parameter("Slope: x").value / 1000.0, rel=1e-6)
     json.loads(r.finalize().model_dump_json())
+
+
+# =============================================================================
+# Audit part 2: least-squares means of the fitted model, unit of measurement
+# =============================================================================
+def _unbalanced_frame(seed=1):
+    rng = np.random.default_rng(seed)
+    sizes = {("a1", "b1"): 3, ("a1", "b2"): 5, ("a1", "b3"): 2,
+             ("a2", "b1"): 6, ("a2", "b2"): 2, ("a2", "b3"): 4}
+    rows = []
+    for (a, b), n in sizes.items():
+        for _ in range(n):
+            mu = 10 + 2 * (a == "a2") + 1.5 * (b == "b2") + 3 * (a == "a2" and b == "b3")
+            rows.append((a, b, rng.normal(mu, 1.0)))
+    return pd.DataFrame(rows, columns=["A", "B", "y"])
+
+
+def test_additive_model_comparisons_are_the_models_least_squares_means():
+    """interactions=False, unbalanced: main-effect comparisons, marginal means and their SEs
+    must be those of the additive model that was fitted (contrasts of its coefficients), as
+    statsmodels gives them, not averages of the observed cell means."""
+    df = _unbalanced_frame()
+    ols = smf.ols("y ~ C(A) + C(B)", df).fit()
+    res = fx.anova_factorial(df, "y", ["A", "B"], interactions=False, posthoc="bonferroni",
+                             posthoc_compare="main_b")
+    # every pairwise contrast of B: estimate, SE, t and unadjusted P from the OLS t_test
+    for la, lb in itertools.combinations(["b1", "b2", "b3"], 2):
+        terms = [f"C(B)[T.{lv}]" for lv in (la, lb) if lv != "b1"]
+        expr = (f"C(B)[T.{la}] - C(B)[T.{lb}] = 0" if len(terms) == 2 else f"-1 * {terms[0]} = 0")
+        ref = ols.t_test(expr)
+        comp = res.comparison(la, lb)
+        sign = 1.0 if comp.group_a == la else -1.0
+        assert sign * comp.estimate == pytest.approx(float(ref.effect[0]), rel=1e-9)
+        assert comp.se == pytest.approx(float(ref.sd[0][0]), rel=1e-9)
+        assert comp.p_value == pytest.approx(float(ref.pvalue), rel=1e-8)
+        assert comp.df == ols.df_resid
+    # estimated marginal means: model predictions averaged with equal weights over the other factor
+    grid = pd.DataFrame(list(itertools.product(["a1", "a2"], ["b1", "b2", "b3"])), columns=["A", "B"])
+    grid["pred"] = ols.predict(grid)
+    marg = {(m["factor"], m["level"]): m for m in res.extra["marginal_means"]}
+    for lv in ["b1", "b2", "b3"]:
+        assert marg[("B", lv)]["mean"] == pytest.approx(grid.loc[grid.B == lv, "pred"].mean(), rel=1e-9)
+    for lv in ["a1", "a2"]:
+        assert marg[("A", lv)]["mean"] == pytest.approx(grid.loc[grid.A == lv, "pred"].mean(), rel=1e-9)
+    # SE of a marginal mean from the coefficient covariance (L Cov(b) L')
+    assert list(ols.params.index) == ["Intercept", "C(A)[T.a2]", "C(B)[T.b2]", "C(B)[T.b3]"]
+    lmat = np.column_stack([np.ones(len(grid)), grid.A == "a2", grid.B == "b2", grid.B == "b3"]).astype(float)
+    w = (grid.B == "b2").to_numpy() / 2.0
+    se_b2 = math.sqrt(float(w @ lmat @ ols.cov_params().to_numpy() @ lmat.T @ w))
+    assert marg[("B", "b2")]["se"] == pytest.approx(se_b2, rel=1e-8)
+    # the cells report both the observed mean and the model's least-squares mean
+    cell = next(c for c in res.extra["cell_means"] if c["A"] == "a2" and c["B"] == "b3")
+    assert cell["ls_mean"] == pytest.approx(float(grid.loc[(grid.A == "a2") & (grid.B == "b3"), "pred"].iloc[0]),
+                                            rel=1e-9)
+    assert cell["mean"] == pytest.approx(df[(df.A == "a2") & (df.B == "b3")]["y"].mean())
+    assert cell["ls_mean"] != pytest.approx(cell["mean"], rel=1e-3)  # the data do have an interaction
+    assert "least-squares" in res.extra["comparisons_note"] and "no interaction" in res.extra["comparisons_note"]
+    # with the interaction in the model nothing changes: observed cell means, MSE / n
+    full = fx.anova_factorial(df, "y", ["A", "B"], posthoc="bonferroni", posthoc_compare="main_b")
+    cells = df.groupby(["A", "B"])["y"].mean()
+    comp = full.comparison("b1", "b2")
+    sign = 1.0 if comp.group_a == "b1" else -1.0
+    assert sign * comp.estimate == pytest.approx(cells.xs("b1", level="B").mean() - cells.xs("b2", level="B").mean())
+    assert "ls_mean" not in full.extra["cell_means"][0] and "observed cell means" in full.extra["comparisons_note"]
+
+
+def test_balanced_additive_model_keeps_the_marginal_means_and_matches_tukey():
+    """Balanced data: the additive model's least-squares means equal the raw marginal means."""
+    rng = np.random.default_rng(4)
+    df = pd.DataFrame([(a, b, rng.normal(10 + (a == "y") + 0.5 * "123".index(b), 1.0))
+                       for a in "xy" for b in "123" for _ in range(4)], columns=["A", "B", "y"])
+    res = fx.anova_factorial(df, "y", ["A", "B"], interactions=False, posthoc="tukey", posthoc_compare="main_b")
+    means = df.groupby("B")["y"].mean()
+    comp = res.comparison("1", "3")
+    sign = 1.0 if comp.group_a == "1" else -1.0
+    assert sign * comp.estimate == pytest.approx(means["1"] - means["3"], rel=1e-9)
+    mse = next(r for r in res.anova_table if r["source"] == "Residual")["ms"]
+    assert comp.se == pytest.approx(math.sqrt(mse * 2 / 8), rel=1e-9)
+
+
+FACTORIAL_SCALES = [1e-13, 1.0, 1e9, 1e150]
+
+
+def _scale_frame(scale=1.0):
+    rng = np.random.default_rng(3)
+    rows = [(a, b, rng.normal() + (a == "q") + 0.5 * (b == "z")) for a in "pq" for b in "xyz" for _ in range(4)]
+    df = pd.DataFrame(rows, columns=["A", "B", "y"])
+    df["cov"] = rng.normal(size=len(df)) + 0.4 * df["y"]
+    df["y"] = df["y"] * scale
+    df["cov"] = df["cov"] * scale
+    return df.drop(index=[0, 7]).reset_index(drop=True)  # unbalanced
+
+
+def _factorial_unit_free(res):
+    return {
+        "f": res.statistic, "p": res.p_value,
+        "table": [(r["f"], r["p"], r["partial_eta_sq"], r["percent_of_variation"]) for r in res.anova_table],
+        "effects": [(e.value, e.ci_low, e.ci_high) for e in res.effect_sizes],
+        "assumption_p": [a.p_value for a in res.assumptions],
+        "comp": [(c.statistic, c.p_value, c.p_adjusted, c.effect_size.value) for c in res.comparisons],
+    }
+
+
+def _factorial_in_units(res, scale):
+    return {
+        "ss": [r["ss"] / scale / scale for r in res.anova_table],
+        "ms": [None if r["ms"] is None else r["ms"] / scale / scale for r in res.anova_table],
+        "desc": [(d["mean"] / scale, d["sd"] / scale) for d in res.descriptives],
+        "comp": [(c.estimate / scale, c.se / scale, c.ci_low / scale, c.ci_high / scale) for c in res.comparisons],
+        "resid": [v / scale for v in res.extra["residuals"]["residual"]],
+    }
+
+
+def _same(a, b, rel=1e-7, path=""):
+    if isinstance(a, dict):
+        assert set(a) == set(b), path
+        for key in a:
+            _same(a[key], b[key], rel, f"{path}/{key}")
+    elif isinstance(a, list | tuple):
+        assert len(a) == len(b), path
+        for i, (u, v) in enumerate(zip(a, b)):
+            _same(u, v, rel, f"{path}[{i}]")
+    elif a is None or b is None:
+        assert a is None and b is None, f"{path}: {a!r} vs {b!r}"
+    else:
+        assert a == pytest.approx(b, rel=rel, abs=1e-9), f"{path}: {a!r} vs {b!r}"
+
+
+@pytest.mark.parametrize("scale", FACTORIAL_SCALES)
+@pytest.mark.parametrize("interactions", [True, False])
+def test_factorial_anova_does_not_depend_on_the_unit_of_measurement(scale, interactions):
+    kwargs = {"interactions": interactions, "posthoc": "tukey", "posthoc_compare": "main_b"}
+    base = fx.anova_factorial(_scale_frame(), "y", ["A", "B"], **kwargs)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        res = fx.anova_factorial(_scale_frame(scale), "y", ["A", "B"], **kwargs)
+    assert res.statistic is not None and res.comparisons
+    _same(_factorial_unit_free(res), _factorial_unit_free(base))
+    _same(_factorial_in_units(res, scale), _factorial_in_units(base, 1.0))
+    _same([(m["mean"] / scale, m["se"] / scale, m["observed_mean"] / scale) for m in res.extra["marginal_means"]],
+          [(m["mean"], m["se"], m["observed_mean"]) for m in base.extra["marginal_means"]])
+    json.loads(res.model_dump_json())
+
+
+@pytest.mark.parametrize("scale", FACTORIAL_SCALES)
+def test_ancova_does_not_depend_on_the_unit_of_outcome_or_covariate(scale):
+    base = fx.ancova(_scale_frame(), "y", "A", "cov", posthoc="tukey")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        res = fx.ancova(_scale_frame(scale), "y", "A", "cov", posthoc="tukey")
+        # outcome and covariate in different units: the slope carries the ratio of the units
+        mixed = _scale_frame()
+        mixed["y"] = mixed["y"] * scale
+        other = fx.ancova(mixed, "y", "A", "cov", posthoc="tukey")
+    for r, slope_unit in ((res, 1.0), (other, scale)):
+        _same(_factorial_unit_free(r), _factorial_unit_free(base))
+        _same(_factorial_in_units(r, scale), _factorial_in_units(base, 1.0))
+        slope, ref = r.parameters[0], base.parameters[0]
+        _same([slope.value / slope_unit, slope.se / slope_unit, slope.statistic, slope.p_value],
+              [ref.value, ref.se, ref.statistic, ref.p_value])
+        _same([(a["adjusted_mean"] / scale, a["se"] / scale) for a in r.extra["adjusted_means"]],
+              [(a["adjusted_mean"], a["se"]) for a in base.extra["adjusted_means"]])
+
+
+@pytest.mark.parametrize("scale", [1e-170, 1e160])
+def test_factorial_anova_with_extreme_magnitudes_reports_the_unit_free_tests(scale):
+    base = fx.anova_factorial(_scale_frame(), "y", ["A", "B"], posthoc="holm", posthoc_compare="main_a")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        res = fx.anova_factorial(_scale_frame(scale), "y", ["A", "B"], posthoc="holm", posthoc_compare="main_a")
+    _same(_factorial_unit_free(res), _factorial_unit_free(base))
+    assert all(r["ss"] is None for r in res.anova_table)
+    assert any("cannot be written as ordinary numbers" in w for w in res.warnings)
+    assert res.comparisons[0].estimate == pytest.approx(base.comparisons[0].estimate * scale, rel=1e-7)
+    json.loads(res.model_dump_json())
+
+
+@pytest.mark.parametrize("scale", [1e-12, 1.0, 1e12])
+def test_residual_normality_check_is_scale_invariant_and_matches_scipy(scale):
+    rng = np.random.default_rng(3)
+    df = pd.DataFrame([(a, b, rng.exponential()) for a in "pq" for b in "xy" for _ in range(6)],
+                      columns=["A", "B", "y"])
+    df["y"] = df["y"] * scale
+    resid = (df["y"] - df.groupby(["A", "B"])["y"].transform("mean")).to_numpy()
+    ref = stats.shapiro(resid / scale)
+    check = next(c for c in fx.anova_factorial(df, "y", ["A", "B"]).assumptions if c.name.startswith("Normality"))
+    assert check.p_value == pytest.approx(ref.pvalue, rel=1e-6) and check.status == "fail"
+    assert check.statistic == pytest.approx(ref.statistic, rel=1e-9)
+
+
+def test_normality_check_still_recognises_a_perfect_fit_at_any_scale():
+    for scale in (1e-12, 1.0, 1e12):
+        df = pd.DataFrame([(a, b, (1.0 + 2 * (a == "q") + 3 * (b == "y")) * scale)
+                           for a in "pq" for b in "xy" for _ in range(3)], columns=["A", "B", "y"])
+        res = fx.anova_factorial(df, "y", ["A", "B"])
+        check = next(c for c in res.assumptions if c.name.startswith("Normality"))
+        assert check.p_value is None and "identical" in check.detail
+        assert any("perfectly" in w for w in res.warnings)
+
+
+def test_grouped_table_text_does_not_leak_the_internal_column_name(run):
+    table = GroupedTable.from_cells(
+        "uptake", {t: {g: list(np.random.default_rng(i + 3 * j).normal(5 + i + j, 1, 4))
+                       for j, g in enumerate(["Ctl", "Drug"])} for i, t in enumerate(["t0", "t1", "t2"])},
+        row_label="Time", column_label="Treatment")
+    res = run(table, "anova_twoway")
+    assert res.interpretation.startswith("Two-way ANOVA of the measured values by Time and Treatment")
+    assert " of value " not in res.interpretation
+    # Multiple-variables tables keep the real column name
+    frame = table.to_long().rename(columns={"value": "Uptake", "row": "Time", "column": "Treatment"})
+    mv = run(MultipleVariablesTable("mv", frame[["Uptake", "Time", "Treatment"]]), "anova_twoway")
+    assert mv.interpretation.startswith("Two-way ANOVA of Uptake by")
+
+
+@pytest.mark.parametrize("offset", [1e6, 1e9, 1e12])
+def test_ancova_does_not_depend_on_a_large_offset_of_the_covariate(offset):
+    """A covariate such as 1e9 + small numbers is numerically the same column as the constant
+    in the raw design; the model is fitted on the centred covariate, which changes nothing but
+    the intercept."""
+    df = _scale_frame()
+    df["cov"] = np.round(df["cov"] * 64) / 64
+    shifted = df.assign(cov=df["cov"] + offset)
+    assert np.array_equal(shifted["cov"] - offset, df["cov"])
+    base = fx.ancova(df, "y", "A", "cov", posthoc="tukey")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        res = fx.ancova(shifted, "y", "A", "cov", posthoc="tukey")
+    _same(_factorial_unit_free(res), _factorial_unit_free(base), rel=1e-7)
+    _same([res.parameters[0].value, res.parameters[0].se, res.parameters[0].p_value],
+          [base.parameters[0].value, base.parameters[0].se, base.parameters[0].p_value], rel=1e-7)
+    _same([(a["adjusted_mean"], a["se"]) for a in res.extra["adjusted_means"]],
+          [(a["adjusted_mean"], a["se"]) for a in base.extra["adjusted_means"]], rel=1e-7)
+    assert res.extra["covariate_means"]["cov"] == pytest.approx(base.extra["covariate_means"]["cov"] + offset)
+    # the two-factor ANCOVA route (covariates of anova_factorial) as well
+    two = fx.anova_factorial(shifted, "y", ["A", "B"], covariates=["cov"])
+    ref = fx.anova_factorial(df, "y", ["A", "B"], covariates=["cov"])
+    _same([(r["f"], r["p"]) for r in two.anova_table], [(r["f"], r["p"]) for r in ref.anova_table], rel=1e-7)

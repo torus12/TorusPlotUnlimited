@@ -30,40 +30,28 @@ table references before these are quoted anywhere else.**
   balanced design, classical balanced formulas, Tukey comparisons against
   `statsmodels.stats.multicomp.pairwise_tukeyhsd`, and the Grouped-table adapter.
 
-### 1.2 Tooth growth in guinea pigs, 2 x 3 factorial with n = 10 (two-way ANOVA)
+### 1.2 Constructed balanced 2 x 3 factorial (replaces a published example)
 
-* Primary source of the measurements: Crampton EW (1947) The growth of the odontoblasts
-  of the incisor tooth as a criterion of the vitamin C intake of the guinea pig.
-  *J Nutr* 33:491-504. Also analysed in Bliss CI (1952) *The Statistics of Bioassay*,
-  Academic Press.
-* Data: 60 values (length by supplement VC / OJ and dose 0.5 / 1 / 2 mg per day), in
-  `TOOTH` in `tests/stats/test_factorial.py`. These are the values widely distributed
-  as the `ToothGrowth` example dataset of the R statistical environment; they were
-  typed from memory, not copied from any file, and the typing is verified in the test
-  against the well-known cell means (7.98, 16.77, 26.14, 13.23, 22.70, 26.06) and grand
-  mean (18.8133).
-* Checked (test `test_published_tooth_growth`): the standard two-way table for
-  `len ~ supp * dose` (dose as a factor): F(supp) = 15.572, F(dose) = 92.000,
-  F(supp x dose) = 4.107 with 1, 2, 2 and 54 df; SS = 205.35, 2426.43, 108.32,
-  residual 712.11; interaction P = 0.02186.
-* Licence note for the maintainer: the numbers are factual measurements from the 1947
-  paper, but the convenient copy most people know ships with GPL-licensed software.
-  The task brief explicitly allowed this example; if the project prefers to avoid any
-  doubt under the "no datasets from copyleft repositories" rule, delete
-  `test_published_tooth_growth` and the `TOOTH` constant (two other tests reuse the
-  constant only as convenient balanced data: `test_missing_values_level_order_and_labels`
-  and the numeric-factor case in the registry test). Example 1.1 covers the same analysis.
+* Earlier versions of this suite used a 1947 guinea-pig tooth-growth dataset (best known as
+  an example dataset bundled with a GPL statistics environment). TorusPlot reproduced its
+  published two-way table exactly (F = 15.572, 92.000, 4.107 on 1, 2, 2 and 54 df). After
+  the licensing audit the data were removed (DECISIONS.md D-030) and replaced by
+  `TOOTH` in `tests/stats/test_factorial.py`: constructed data in which every cell is a
+  prescribed mean plus the same zero-sum deviations, so all sums of squares are known
+  exactly (`_tooth_like_reference`). Test: `test_balanced_two_way_matches_exact_sums_of_squares`.
 
-### 1.3 "Bushtucker trial", 8 subjects x 4 conditions (one-way repeated measures)
+### 1.3 Constructed 8 subjects x 4 conditions (replaces a published example)
 
-* Source: Field A. *Discovering Statistics Using IBM SPSS Statistics*. SAGE. Chapter on
-  repeated-measures designs: time to retch for 8 celebrities eating 4 foods (stick
-  insect, kangaroo testicle, fish eye, witchetty grub).
-* Data: 32 values, in `FIELD` in `tests/stats/test_repeated.py`.
-* Checked (test `test_published_field_bushtucker_example`):
-  F(3, 21) = 3.79, p = .026 (sphericity assumed); Mauchly W = .136,
-  chi-square(5) = 11.41, p = .047; Greenhouse-Geisser epsilon = .533 (p = .063);
-  Huynh-Feldt epsilon = .666 (p = .048). Tolerance: half a unit in the last digit.
+* Earlier versions of this suite used a textbook repeated-measures teaching example
+  (8 subjects x 4 conditions). TorusPlot reproduced its published output exactly:
+  F(3, 21) = 3.79, p = .026; Mauchly W = .136, chi-square(5) = 11.41, p = .047;
+  Greenhouse-Geisser epsilon = .533 (p = .063); Huynh-Feldt epsilon = .666 (p = .048); the
+  independent statistics reviewer confirmed the same. After the licensing audit the example
+  was removed (DECISIONS.md D-030) because its numbers are an author's invention rather
+  than measurements. It is replaced by `RM_DATA` in `tests/stats/test_repeated.py`:
+  constructed data with the same qualitative behaviour (sphericity violated; uncorrected
+  P < .05 < Greenhouse-Geisser P; Huynh-Feldt P < .05), checked against first-principles
+  formulas and statsmodels `AnovaRM` in `test_rm_anova_matches_first_principles_and_statsmodels`.
 * Investigation recorded here because it changed the implementation: the plain
   chi-square tail probability of 11.41 on 5 df is .044, not the published .047. The
   published value is reproduced exactly when the second-order term of Box's (1949)

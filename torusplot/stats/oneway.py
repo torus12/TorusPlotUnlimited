@@ -34,6 +34,14 @@ References
   *J Am Stat Assoc* 69:364-367.
 * Bartlett MS (1937) Properties of sufficiency and statistical tests.
   *Proc R Soc A* 160:268-282.
+
+Numerical range: F statistics, P values and effect sizes do not depend on the origin or
+unit of the data, so they are computed from jointly rescaled values (``_utils.rescale``:
+a common location is subtracted and the result divided by a power of two). Sums of
+squares, mean squares, means, SDs and confidence limits are scaled back to the units of
+the data; a quantity outside the representable range (about 1e-308 to 1.8e308, e.g. a sum of
+squares of values near 1e200 or 1e-200) is reported as missing with a warning instead of
+as infinity, zero or NaN.
 """
 
 from __future__ import annotations
@@ -46,9 +54,22 @@ from typing import Any
 import numpy as np
 from scipy import stats
 
+from . import assumptions as am
 from . import effect_sizes as es
 from . import posthoc as ph
-from ._utils import StatsError, check_alpha, ci_phrase, clean_groups, fmt, p_phrase, sig_phrase
+from ._utils import (
+    Rescaled,
+    StatsError,
+    check_alpha,
+    ci_phrase,
+    clean_groups,
+    fmt,
+    p_phrase,
+    pow2_back,
+    pow2_scaled,
+    rescale,
+    sig_phrase,
+)
 from .multiplicity import METHOD_LABELS
 from .registry import ParamSpec, register
 from .result import AssumptionCheck, Comparison, EffectSize, Parameter, StatResult
@@ -106,22 +127,30 @@ def _two_group_note(k: int, equivalent: str) -> list[str]:
     return []
 
 
-def _sums_of_squares(arrays: Sequence[np.ndarray]) -> dict[str, Any]:
+def _sums_of_squares(arrays: Sequence[np.ndarray], constant: Sequence[bool] | None = None,
+                     noise: float | None = None) -> dict[str, Any]:
     """Between / within / total sums of squares, computed to survive large offsets.
 
     The data are centred on the grand mean first (the subtraction of nearby numbers is
     exact in floating point), every sum uses exactly-rounded summation (``math.fsum``),
     and group means are refined with one correction pass. Groups whose values agree to
     rounding error contribute exactly zero to the within-group sum.
+
+    For rescaled data (see :func:`_scaled_ss`) ``constant`` gives, per group, whether
+    the ORIGINAL values are constant, and ``noise`` the size of one unit in the last
+    place of the original values in rescaled units (group-mean differences of a few
+    ``noise`` are rounding error).
     """
+    if constant is None:
+        constant = [ph._near_constant(a) for a in arrays]
     n_total = sum(a.size for a in arrays)
     pooled = np.concatenate(arrays)
     grand = math.fsum(pooled) / n_total
     grand += math.fsum(pooled - grand) / n_total
     deviations: list[float] = []  # group mean minus grand mean
     residuals: list[np.ndarray] = []
-    for a in arrays:
-        if ph._near_constant(a):
+    for a, flat in zip(arrays, constant):
+        if flat:
             deviations.append(float(a[0]) - grand)
             residuals.append(np.zeros(a.size))
             continue
@@ -134,8 +163,12 @@ def _sums_of_squares(arrays: Sequence[np.ndarray]) -> dict[str, Any]:
     # re-centre the group deviations on their weighted mean (rounding-level correction)
     offset = math.fsum(a.size * d for a, d in zip(arrays, deviations)) / n_total
     deviations = [d - offset for d in deviations]
-    scale = float(np.max(np.abs(pooled))) if n_total else 0.0
-    if all(abs(d) <= 8.0 * np.finfo(float).eps * scale for d in deviations):
+    if noise is None:
+        scale = float(np.max(np.abs(pooled))) if n_total else 0.0
+        tol = 8.0 * np.finfo(float).eps * scale
+    else:
+        tol = 16.0 * noise
+    if all(abs(d) <= tol for d in deviations):
         deviations = [0.0] * len(arrays)
     ss_between = math.fsum(a.size * d * d for a, d in zip(arrays, deviations))
     ss_within = math.fsum(np.concatenate(residuals) ** 2)
@@ -149,21 +182,55 @@ def _sums_of_squares(arrays: Sequence[np.ndarray]) -> dict[str, Any]:
     }
 
 
+def _scaled_ss(arrays: Sequence[np.ndarray]) -> tuple[Rescaled, dict[str, Any]]:
+    """Jointly rescale the groups and compute the sums of squares in rescaled units.
+
+    Everything returned in the dict is in rescaled units; map quantities back with the
+    returned :class:`~torusplot.stats._utils.Rescaled` (``square`` for sums of squares
+    and mean squares, ``spread`` for deviations / residuals, ``location`` for means)."""
+    rs = rescale(*arrays)
+    ss = _sums_of_squares(rs.arrays, [ph._near_constant(a) for a in arrays], rs.noise)
+    return rs, ss
+
+
+def _sd(a: np.ndarray) -> float:
+    """Sample SD without overflow or underflow (power-of-two scaling is exact)."""
+    if ph._near_constant(a):
+        return 0.0
+    scaled, e = pow2_scaled(a)
+    return pow2_back(float(np.std(scaled, ddof=1)), e)
+
+
+def _finite_or_none(value: float | None) -> float | None:
+    return value if value is not None and math.isfinite(value) else None
+
+
 def _descriptives(cleaned: Mapping[str, np.ndarray], level: float = 0.95) -> list[dict[str, Any]]:
     rows = []
     for name, a in cleaned.items():
         n = a.size
         mean = ph._mean(a)
-        sd = math.sqrt(ph._variance(a)) if n > 1 else None
+        sd = _sd(a) if n > 1 else None
         sem = sd / math.sqrt(n) if sd is not None else None
         half = float(stats.t.ppf(0.5 + level / 2.0, n - 1)) * sem if sem is not None else None
+        with np.errstate(over="ignore"):
+            low = float(np.float64(mean) - half) if half is not None else None
+            high = float(np.float64(mean) + half) if half is not None else None
         rows.append({
             "group": name, "n": int(n), "mean": mean, "sd": sd, "sem": sem,
             "median": float(np.median(a)), "min": float(np.min(a)), "max": float(np.max(a)),
-            "ci_low": mean - half if half is not None else None,
-            "ci_high": mean + half if half is not None else None,
+            # a limit beyond the largest representable number is reported as missing
+            "ci_low": _finite_or_none(low), "ci_high": _finite_or_none(high),
         })
     return rows
+
+
+_UNREPRESENTABLE = (
+    "Some quantities (sums of squares, mean squares, variances or confidence limits) lie outside "
+    "the range of numbers a computer can represent (about 1e-308 to 1.8e308) and are shown as "
+    "missing. The test statistic, P value and effect sizes are unaffected; express the data in "
+    "another unit (e.g. thousands or millionths) to see them."
+)
 
 
 def _mean_parameters(rows: list[dict[str, Any]]) -> list[Parameter]:
@@ -182,6 +249,7 @@ def _shapiro(values: np.ndarray) -> tuple[float, float] | None:
     """Shapiro-Wilk (W, P), or None when it cannot be computed."""
     if values.size < 3 or values.size > _SHAPIRO_MAX_N or ph._near_constant(values):
         return None
+    values = rescale(values).arrays[0]  # W does not depend on origin or unit
     with warnings.catch_warnings(), np.errstate(all="ignore"):
         warnings.simplefilter("ignore")
         w, p = stats.shapiro(values)
@@ -243,26 +311,40 @@ def _normality_checks(cleaned: Mapping[str, np.ndarray], residuals: np.ndarray,
 
 
 def _brown_forsythe_variance(arrays: Sequence[np.ndarray]) -> tuple[float, float] | None:
-    """Brown-Forsythe (median-centred Levene) test of equal variances, or None."""
+    """Brown-Forsythe (median-centred Levene) test of equal variances, or None.
+
+    Uses :func:`torusplot.stats.assumptions.brown_forsythe_test` (computed on rescaled
+    data, so large offsets and extreme magnitudes are handled)."""
     if any(a.size < 2 for a in arrays) or all(ph._near_constant(a) for a in arrays):
         return None
-    with warnings.catch_warnings(), np.errstate(all="ignore"):
-        warnings.simplefilter("ignore")
-        stat, p = stats.levene(*arrays, center="median")
-    if not (math.isfinite(stat) and math.isfinite(p)):
+    res = am.brown_forsythe_test(list(arrays))
+    if res["statistic"] is None or res["p_value"] is None:
         return None
-    return float(stat), float(p)
+    return float(res["statistic"]), float(res["p_value"])
+
+
+def _variance_untestable_reason(arrays: Sequence[np.ndarray], any_constant: bool) -> str:
+    """Why an equal-variance test could not be run, in words that match the data."""
+    small = any(a.size < 2 for a in arrays)
+    if small:
+        return "Cannot be tested: at least one group has fewer than 2 values."
+    if any_constant and any(ph._near_constant(a) for a in arrays):
+        return "Cannot be tested: at least one group has no variability (all its values are identical)."
+    if all(ph._near_constant(a) for a in arrays):
+        return "Cannot be tested: no group shows any variability."
+    return ("Cannot be tested: within every group the values are equally far from the group "
+            "median (this happens when groups have only 2 values), so the test is undefined.")
 
 
 def _bartlett(arrays: Sequence[np.ndarray]) -> tuple[float, float] | None:
+    """Bartlett's test via :func:`torusplot.stats.assumptions.bartlett_test` (exactly 0,
+    P = 1, when the variances are equal), or None when a group has n < 2 or no spread."""
     if any(a.size < 2 for a in arrays) or any(ph._near_constant(a) for a in arrays):
         return None
-    with warnings.catch_warnings(), np.errstate(all="ignore"):
-        warnings.simplefilter("ignore")
-        stat, p = stats.bartlett(*arrays)
-    if not (math.isfinite(stat) and math.isfinite(p)):
+    res = am.bartlett_test(list(arrays))
+    if res["statistic"] is None or res["p_value"] is None:
         return None
-    return float(stat), float(p)
+    return float(res["statistic"]), float(res["p_value"])
 
 
 def _variance_checks(arrays: Sequence[np.ndarray], *, required: bool) -> list[AssumptionCheck]:
@@ -273,8 +355,7 @@ def _variance_checks(arrays: Sequence[np.ndarray], *, required: bool) -> list[As
     if bf is None:
         checks.append(AssumptionCheck(
             name=name, status="warn" if required else "info",
-            detail="Cannot be tested (a group has fewer than 2 values, or no group shows any "
-                   "variability)."))
+            detail=_variance_untestable_reason(arrays, any_constant=False)))
     else:
         stat, p = bf
         if not required:
@@ -298,7 +379,7 @@ def _variance_checks(arrays: Sequence[np.ndarray], *, required: bool) -> list[As
         if bart is None:
             checks.append(AssumptionCheck(
                 name=name, status="warn",
-                detail="Cannot be tested (a group has fewer than 2 values or no variability)."))
+                detail=_variance_untestable_reason(arrays, any_constant=True)))
         else:
             stat, p = bart
             if p < 0.05:
@@ -355,6 +436,7 @@ def _posthoc_key(posthoc: str | None, allowed: Sequence[str], test: str) -> str:
 def _mean_posthoc(
     cleaned: Mapping[str, np.ndarray], key: str, control: str | None, alpha: float, *,
     pooled: bool, mse: float | None = None, df_error: float | None = None,
+    mse_in_pow2_units: float | None = None,
 ) -> tuple[ph.PosthocResult | None, list[str]]:
     """Run the chosen mean-comparison procedure; problems become warnings, not errors."""
     notes: list[str] = []
@@ -374,15 +456,32 @@ def _mean_posthoc(
                      "pairs of groups. Choose Dunnett (or a P value adjustment such as Holm) to "
                      "compare each group with the control only.")
         control = None
+    # Mean comparisons are location-scale equivariant: run them on the data divided by a
+    # common power of two (exact; no overflow or underflow of squares) and scale the
+    # estimates, SEs and CI limits back. ``mse`` must then be given in those units too.
+    scaled, e = pow2_scaled(np.concatenate(list(cleaned.values())))
+    bounds = np.cumsum([0] + [a.size for a in cleaned.values()])
+    scaled_groups = {name: scaled[bounds[i]:bounds[i + 1]] for i, name in enumerate(names)}
+    mse_scaled = mse_in_pow2_units if mse_in_pow2_units is not None else (
+        None if mse is None else float(np.ldexp(mse, -2 * e)))
+    use_mse = key != "games-howell" and mse_scaled is not None and df_error is not None
     try:
         result = ph.run_posthoc(
-            cleaned, key, control=control, alpha=alpha, pooled=pooled,
-            mse=mse if key != "games-howell" else None,
-            df_error=df_error if key != "games-howell" else None,
+            scaled_groups, key, control=control, alpha=alpha, pooled=pooled,
+            mse=mse_scaled if use_mse else None, df_error=df_error if use_mse else None,
         )
+        fields = ("estimate", "se", "ci_low", "ci_high")
+        comparisons = [
+            c.model_copy(update={f: None if getattr(c, f) is None else pow2_back(getattr(c, f), e)
+                                 for f in fields})
+            for c in result.comparisons
+        ]
     except StatsError as exc:
         notes.append(f"Post-hoc comparisons could not be computed: {exc}")
         return None, notes
+    result = ph.PosthocResult(comparisons, result.family, result.correction,
+                              warnings=result.warnings, citations=result.citations,
+                              method=result.method)
     notes.extend(result.warnings)
     if key == "lsd" and len(names) > 3:
         notes.append("Unadjusted (LSD-type) comparisons do not control the family-wise error "
@@ -483,10 +582,13 @@ def anova_oneway(
             "One-way ANOVA needs replicates: every group has a single value, so the "
             "within-group variability cannot be estimated. Add more values per group."
         )
-    ss = _sums_of_squares(arrays)
-    ssb, ssw, sst = ss["ss_between"], ss["ss_within"], ss["ss_total"]
-    msb, msw = ssb / df1, ssw / df2
-    f, p, degenerate = _f_and_p(msb, msw, df1, df2)
+    # F, P and effect sizes from rescaled data (scale invariant); SS / MS mapped back
+    rs, ss = _scaled_ss(arrays)
+    ssb_z, ssw_z, sst_z = ss["ss_between"], ss["ss_within"], ss["ss_total"]
+    msb_z, msw_z = ssb_z / df1, ssw_z / df2
+    f, p, degenerate = _f_and_p(msb_z, msw_z, df1, df2)
+    ssb, ssw, sst = rs.square(ssb_z), rs.square(ssw_z), rs.square(sst_z)
+    msb, msw = rs.square(msb_z), rs.square(msw_z)
 
     warn: list[str] = []
     if degenerate:
@@ -504,25 +606,34 @@ def anova_oneway(
         k, "With two groups the one-way ANOVA is equivalent to the unpaired t test "
            "(F = t squared), which is the usual choice."))
 
+    # ratios of sums of squares: identical in rescaled units
     if f is not None and math.isfinite(f):
-        eta = es.eta_squared(ssb, sst, f, df1, df2)
-        omega = es.omega_squared(ssb, df1, msw, sst, f, df2)
+        eta = es.eta_squared(ssb_z, sst_z, f, df1, df2)
+        omega = es.omega_squared(ssb_z, df1, msw_z, sst_z, f, df2)
     else:
-        eta = es.eta_squared(ssb, sst) if sst > 0 else EffectSize(name="eta squared", value=None)
-        omega = (es.omega_squared(ssb, df1, msw, sst) if sst > 0
+        eta = es.eta_squared(ssb_z, sst_z) if sst_z > 0 else EffectSize(name="eta squared", value=None)
+        omega = (es.omega_squared(ssb_z, df1, msw_z, sst_z) if sst_z > 0
                  else EffectSize(name="omega squared", value=None))
     effects = [_none_if_nan(eta), _none_if_nan(omega)]
 
-    residuals = np.concatenate(ss["residuals"])
+    residuals_z = np.concatenate(ss["residuals"])
     assumptions = [_independence_check()]
-    assumptions += _normality_checks(cleaned, residuals, "the Kruskal-Wallis test")
+    assumptions += _normality_checks(cleaned, residuals_z, "the Kruskal-Wallis test")
     assumptions += _variance_checks(arrays, required=True)
 
-    post, post_notes = _mean_posthoc(cleaned, key, control, alpha, pooled=True, mse=msw,
-                                     df_error=float(df2))
+    # the error mean square in the units of the data divided by 2**e1 (see _mean_posthoc)
+    _, e2 = rs.exponents
+    post, post_notes = _mean_posthoc(cleaned, key, control, alpha, pooled=True,
+                                     df_error=float(df2),
+                                     mse_in_pow2_units=float(np.ldexp(msw_z, 2 * e2)))
     warn.extend(post_notes)
 
     desc = _descriptives(cleaned)
+    grand_mean = rs.location(ss["grand_mean"])
+    root_mse = rs.spread(math.sqrt(msw_z))
+    if any(v is None for v in (ssb, ssw, sst, msb, msw)) or any(
+            r["ci_low"] is None and r["sem"] is not None for r in desc):
+        warn.append(_UNREPRESENTABLE)
     result = StatResult(
         analysis="anova_oneway",
         test_name="One-way ANOVA",
@@ -544,14 +655,14 @@ def anova_oneway(
         warnings=warn, data_notes=notes,
         citations=[CITE_FISHER],
         extra={
-            "grand_mean": ss["grand_mean"],
-            "r_squared": ssb / sst if sst > 0 else None,
-            "root_mse": math.sqrt(msw),
+            "grand_mean": grand_mean,
+            "r_squared": ssb_z / sst_z if sst_z > 0 else None,
+            "root_mse": root_mse,
             "residuals": {
                 "group": [name for name, a in cleaned.items() for _ in range(a.size)],
-                "fitted": [ss["grand_mean"] + d for a, d in zip(arrays, ss["deviations"])
+                "fitted": [rs.location(ss["grand_mean"] + d) for a, d in zip(arrays, ss["deviations"])
                            for _ in range(a.size)],
-                "residual": residuals.tolist(),
+                "residual": rs.spread_array(residuals_z).tolist(),
             },
         },
     )
@@ -597,9 +708,12 @@ def _heteroscedastic_common(
         groups, what, min_each=2,
         why_min=" because it estimates a separate variance for each group")
     arrays = list(cleaned.values())
-    ss = _sums_of_squares(arrays)
+    # statistics from rescaled data (scale invariant); "_z" quantities are in rescaled units
+    rs, ss = _scaled_ss(arrays)
     n = np.array([a.size for a in arrays], dtype=float)
-    variances = np.array([ph._variance(a) for a in arrays])
+    variances_z = np.array([0.0 if ph._near_constant(a) else float(np.var(z, ddof=1))
+                            for a, z in zip(arrays, rs.arrays)])
+    variances = [rs.square(v) for v in variances_z]  # data units (None if unrepresentable)
     residuals = np.concatenate(ss["residuals"])
     assumptions = [_independence_check()]
     assumptions += _normality_checks(cleaned, residuals, "the Kruskal-Wallis test")
@@ -611,11 +725,15 @@ def _heteroscedastic_common(
         value=ss["ss_between"] / ss["ss_total"] if ss["ss_total"] > 0 else None,
     )
     eta.magnitude = es.magnitude_eta2(eta.value)
+    if any(v is None for v in variances) or any(
+            r["ci_low"] is None and r["sem"] is not None for r in desc):
+        post_notes = [*post_notes, _UNREPRESENTABLE]
     return {
         "alpha": alpha, "cleaned": cleaned, "notes": notes, "arrays": arrays, "ss": ss, "n": n,
-        "variances": variances, "assumptions": assumptions, "post": post,
+        "variances_z": variances_z, "variances": variances, "assumptions": assumptions, "post": post,
         "post_notes": post_notes, "desc": desc, "eta": eta, "k": len(arrays),
-        "n_total": int(n.sum()), "residuals": residuals,
+        "n_total": int(n.sum()), "residuals": residuals, "rs": rs,
+        "grand_mean": rs.location(ss["grand_mean"]),
     }
 
 
@@ -677,7 +795,7 @@ def welch_anova(
     vs ``control`` when one is given) or ``none``.
     """
     c = _heteroscedastic_common(groups, "Welch's ANOVA", posthoc, control, alpha)
-    k, n, variances = c["k"], c["n"], c["variances"]
+    k, n, variances = c["k"], c["n"], c["variances_z"]
     warn: list[str] = []
     df1 = float(k - 1)
     f: float | None = None
@@ -723,8 +841,8 @@ def welch_anova(
              "f": None, "p": None},
         ],
         warnings=warn, data_notes=c["notes"], citations=[CITE_WELCH],
-        extra={"grand_mean": c["ss"]["grand_mean"],
-               "group_variances": dict(zip(c["cleaned"], variances.tolist()))},
+        extra={"grand_mean": c["grand_mean"],
+               "group_variances": dict(zip(c["cleaned"], c["variances"]))},
     )
     _attach_posthoc(result, c["post"])
     _heteroscedastic_text(result, c, "Welch's ANOVA", f, df1, df2, p)
@@ -752,15 +870,16 @@ def brown_forsythe_anova(
     Every group needs at least 2 values. ``posthoc`` as in :func:`welch_anova`.
     """
     c = _heteroscedastic_common(groups, "The Brown-Forsythe ANOVA", posthoc, control, alpha)
-    k, n, variances, n_total = c["k"], c["n"], c["variances"], c["n_total"]
-    ssb = c["ss"]["ss_between"]
+    k, n, variances, n_total = c["k"], c["n"], c["variances_z"], c["n_total"]
+    rs = c["rs"]
+    ssb = c["ss"]["ss_between"]  # rescaled units: F*, df and P are scale invariant
     warn: list[str] = []
     df1 = float(k - 1)
     terms = (1.0 - n / n_total) * variances
     denom = float(terms.sum())
     df2: float | None = None
-    extra: dict[str, Any] = {"grand_mean": c["ss"]["grand_mean"],
-                             "group_variances": dict(zip(c["cleaned"], variances.tolist()))}
+    extra: dict[str, Any] = {"grand_mean": c["grand_mean"],
+                             "group_variances": dict(zip(c["cleaned"], c["variances"]))}
     if denom > 0:
         f: float | None = ssb / denom
         df2 = denom ** 2 / float(np.sum(terms ** 2 / (n - 1.0)))
@@ -795,9 +914,10 @@ def brown_forsythe_anova(
         n={name: int(a.size) for name, a in c["cleaned"].items()},
         descriptives=c["desc"],
         anova_table=[
-            {"source": "Between groups", "ss": ssb, "df": df1, "ms": ssb / df1, "f": f, "p": p},
+            {"source": "Between groups", "ss": rs.square(ssb), "df": df1, "ms": rs.square(ssb / df1),
+             "f": f, "p": p},
             {"source": "Within groups (Brown-Forsythe denominator)", "ss": None, "df": df2,
-             "ms": denom / df1, "f": None, "p": None},
+             "ms": rs.square(denom / df1), "f": None, "p": None},
         ],
         warnings=warn, data_notes=c["notes"], citations=[CITE_BF], extra=extra,
     )
@@ -1161,6 +1281,17 @@ _GROUPS_PARAM = ParamSpec(
     "groups", "Groups to compare", kind="groups", default=None, optional=True,
     help="Which columns (groups) to include. Leave empty to compare all columns. Three or more "
          "groups is usual; with two, a t test gives the same answer.")
+_GROUPS_HELP_START = "Which columns (groups) to include. Leave empty to compare all columns. Three or more groups is usual; "
+_WELCH_GROUPS_PARAM = ParamSpec(
+    "groups", "Groups to compare", kind="groups", default=None, optional=True,
+    help=_GROUPS_HELP_START + "with two, Welch's t test gives the same answer.")
+_BF_GROUPS_PARAM = ParamSpec(
+    "groups", "Groups to compare", kind="groups", default=None, optional=True,
+    help=_GROUPS_HELP_START + "with two groups, use Welch's t test instead.")
+_KW_GROUPS_PARAM = ParamSpec(
+    "groups", "Groups to compare", kind="groups", default=None, optional=True,
+    help=_GROUPS_HELP_START + "with two groups, use the Mann-Whitney test, the two-group "
+         "version of this rank test.")
 _ALPHA_PARAM = ParamSpec(
     "alpha", "Significance level (alpha)", kind="float", default=0.05,
     help="The P value threshold for calling a result significant. 0.05 is the usual choice.")
@@ -1169,6 +1300,17 @@ _CONTROL_PARAM = ParamSpec(
     help="Optional. The reference group that every other group is compared with (used by "
          "Dunnett's test and by the Bonferroni/Holm-type options). Leave empty to compare all "
          "pairs; Dunnett's test then uses the first column as control.")
+_UNEQUAL_CONTROL_PARAM = ParamSpec(
+    "control", "Control group", kind="group", default=None, optional=True,
+    help="Optional. A reference group: with the Bonferroni/Holm-type options every other group is "
+         "compared with it only (Welch t tests), instead of all pairs. Games-Howell always compares "
+         "all pairs and ignores it. (Dunnett's test is not offered here because it assumes equal "
+         "variances.) Leave empty to compare all pairs.")
+_KW_CONTROL_PARAM = ParamSpec(
+    "control", "Control group", kind="group", default=None, optional=True,
+    help="Optional. A reference group: Dunn's test then compares every other group with it only, "
+         "instead of all pairs (fewer comparisons, so a milder correction). Leave empty to compare "
+         "all pairs.")
 _ADJUST_HELP = (
     "How P values are corrected for making several comparisons. Bonferroni: multiply each P by "
     "the number of comparisons (simple, strict). Sidak: almost the same, slightly less strict. "
@@ -1245,10 +1387,10 @@ def _run_anova_oneway(table: Any, groups: Any = None, posthoc: str = "tukey",
     key="welch_anova", label="Welch's ANOVA", category="Compare three or more groups",
     tables=("column",),
     params=(
-        _GROUPS_PARAM,
+        _WELCH_GROUPS_PARAM,
         ParamSpec("posthoc", "Post-hoc comparisons", kind="choice", default="games-howell",
                   choices=_UNEQUAL_VAR_POSTHOCS, help=_POSTHOC_UNEQUAL_HELP),
-        _CONTROL_PARAM,
+        _UNEQUAL_CONTROL_PARAM,
         _ALPHA_PARAM,
     ),
     description="Tests whether the means of three or more independent groups differ without "
@@ -1267,10 +1409,10 @@ def _run_welch_anova(table: Any, groups: Any = None, posthoc: str = "games-howel
     key="brown_forsythe_anova", label="Brown-Forsythe ANOVA",
     category="Compare three or more groups", tables=("column",),
     params=(
-        _GROUPS_PARAM,
+        _BF_GROUPS_PARAM,
         ParamSpec("posthoc", "Post-hoc comparisons", kind="choice", default="games-howell",
                   choices=_UNEQUAL_VAR_POSTHOCS, help=_POSTHOC_UNEQUAL_HELP),
-        _CONTROL_PARAM,
+        _UNEQUAL_CONTROL_PARAM,
         _ALPHA_PARAM,
     ),
     description="Another test of whether three or more group means differ that does not assume "
@@ -1288,7 +1430,7 @@ def _run_brown_forsythe_anova(table: Any, groups: Any = None, posthoc: str = "ga
     key="kruskal_wallis", label="Kruskal-Wallis test", category="Compare three or more groups",
     tables=("column",),
     params=(
-        _GROUPS_PARAM,
+        _KW_GROUPS_PARAM,
         ParamSpec("posthoc", "Post-hoc comparisons", kind="choice", default="dunn",
                   choices=("dunn", "none"),
                   help="Which follow-up comparisons to run. dunn: Dunn's test compares the "
@@ -1296,7 +1438,7 @@ def _run_brown_forsythe_anova(table: Any, groups: Any = None, posthoc: str = "ga
                        "skip follow-up comparisons."),
         ParamSpec("adjust", "Multiple-comparison correction", kind="choice",
                   default="bonferroni", choices=_ADJUST_CHOICES, help=_ADJUST_HELP),
-        _CONTROL_PARAM,
+        _KW_CONTROL_PARAM,
         _ALPHA_PARAM,
     ),
     description="Compares three or more independent groups using ranks instead of the raw "

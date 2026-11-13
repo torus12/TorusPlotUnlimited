@@ -64,7 +64,10 @@ def test_four_parameter_logistic_from_the_brief():
          lambda x, a, b, c: np.sinh(a * x / 10) + np.cosh(b * x / 10) + np.arctan(x - c) + np.arctan(c)),
         ("min(A*x, B) + max(x, C, 2)",
          lambda x, a, b, c: np.minimum(a * x, b) + np.maximum(np.maximum(x, c), 2)),
-        ("pow(x, P) * pi + e*Q", lambda x, p, q: x**p * math.pi + math.e * q),
+        # Euler's number is written exp(1): a bare 'e' is a parameter (audit defect B7; this
+        # case used to rely on 'e' being silently replaced by 2.718...)
+        ("pow(x, P) * pi + exp(1)*Q", lambda x, p, q: x**p * math.pi + math.e * q),
+        ("a + b*x + c*x^2 + e*x^3", lambda x, a, b, c, e: a + b * x + c * x**2 + e * x**3),
         ("+A - -B*x", lambda x, a, b: a + b * x),
         ("A*x + 1e-3*B + .5 + 5.", lambda x, a, b: a * x + 1e-3 * b + 5.5),
         ("A − B×x", lambda x, a, b: a - b * x),  # unicode minus and multiplication sign
@@ -97,11 +100,21 @@ def test_power_rule_branches():
 def test_parameters_ordered_by_first_appearance_and_case_rules():
     eq = parse_equation("b1 + b3*x + b2*X + b3")
     assert eq.parameters == ["b1", "b3", "b2"]
-    # E (upper case) is a parameter, e is Euler's number; Pi/PI are the constant
+    # E and e are both ordinary parameters (a bare 'e' is NOT Euler's number: audit defect
+    # B7, a quartic 'a + ... + e*x^4' was silently fitted with e frozen at 2.718; the old
+    # assertion here, parameters == ["E"], encoded that defect). Pi/PI are the constant.
     eq2 = parse_equation("E*x + e + PI + Pi")
-    assert eq2.parameters == ["E"]
-    assert eq2.func([0.0], 5.0)[0] == pytest.approx(math.e + 2 * math.pi)
-    assert CONSTANTS["pi"] == math.pi and "exp" in FUNCTIONS
+    assert eq2.parameters == ["E", "e"]
+    assert eq2.func([0.0], 5.0, 7.0)[0] == pytest.approx(7.0 + 2 * math.pi)
+    assert CONSTANTS == {"pi": math.pi} and "exp" in FUNCTIONS
+    # the user is told how the ambiguous names were read
+    assert any("'e'" in n and "Euler" in n and "exp(1)" in n for n in eq2.notes)
+    assert any("3.14159" in n for n in eq2.notes)
+    assert parse_equation("A*exp(-K*x)").notes == []
+    # Euler's number remains available, and scientific notation is still a number
+    eq3 = parse_equation("A*exp(1) + 1e3 + 2.5E-1")
+    assert eq3.parameters == ["A"] and eq3.notes == []
+    assert eq3.func([0.0], 2.0)[0] == pytest.approx(2 * math.e + 1000.25)
 
 
 def test_no_x_and_no_parameters():
@@ -307,7 +320,8 @@ def test_fuzz_arbitrary_unicode_only_raises_stats_error(text):
     eq.func(X, *([0.5] * eq.n_parameters))
 
 
-_LEAF = st.sampled_from(["x", "A", "B", "K", "2", "0.5", "pi", "e", "1e3"])
+# "exp(1)" replaces the former leaf "e": a bare 'e' is now a parameter (audit defect B7)
+_LEAF = st.sampled_from(["x", "A", "B", "K", "2", "0.5", "pi", "exp(1)", "1e3"])
 
 
 def _combine(children):

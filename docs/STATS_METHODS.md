@@ -66,10 +66,10 @@ calculation written in the test. Where no published example is used, the table s
 | Brown-Forsythe ANOVA | `brown_forsythe_anova` | Column | Brown MB, Forsythe AB (1974) Technometrics 16:129-132 | Cross-check with statsmodels and the formula. No published example |
 | Kruskal-Wallis test | `kruskal_wallis` | Column | Kruskal WH, Wallis WA (1952) J Am Stat Assoc 47:583-621 | Published: Hollander & Wolfe (1973) data; ozone data with missing values; cross-check with SciPy |
 | Friedman test | `friedman` | Column | Friedman M (1937) J Am Stat Assoc 32:675-701 | Published: Hollander & Wolfe (1973) rounding-first-base data; cross-check with SciPy |
-| Two-way ANOVA | `anova_twoway` | Grouped, Multiple variables | Fisher RA (1925) Statistical Methods for Research Workers. Oliver & Boyd, Edinburgh | Published: Montgomery battery-life experiment; Crampton (1947) tooth-growth data; cross-check with statsmodels |
+| Two-way ANOVA | `anova_twoway` | Grouped, Multiple variables | Fisher RA (1925) Statistical Methods for Research Workers. Oliver & Boyd, Edinburgh | Published: Montgomery battery-life experiment; constructed balanced design with exact sums of squares; cross-check with statsmodels |
 | Three-way ANOVA | `anova_threeway` | Multiple variables | Fisher RA (1925) Statistical Methods for Research Workers. Oliver & Boyd, Edinburgh | Cross-check with statsmodels `anova_lm`; classical balanced formulas. No published example |
 | ANCOVA (analysis of covariance) | `ancova` | Multiple variables | Cochran WG (1957) Analysis of covariance: its nature and uses. Biometrics 13:261-281 | Cross-check with statsmodels; first-principles adjusted means. No published example |
-| Repeated-measures one-way ANOVA | `anova_rm_oneway` | Column | Greenhouse SW, Geisser S (1959) On methods in the analysis of profile data. Psychometrika 24:95-112 | Published: Field, 8 subjects x 4 conditions (F, Mauchly, epsilons); cross-check with statsmodels `AnovaRM` |
+| Repeated-measures one-way ANOVA | `anova_rm_oneway` | Column | Greenhouse SW, Geisser S (1959) On methods in the analysis of profile data. Psychometrika 24:95-112 | Constructed 8 x 4 data checked against first-principles F, Mauchly and epsilons; cross-check with statsmodels `AnovaRM` |
 | Mixed-design ANOVA (repeated measures by group) | `anova_mixed` | Grouped, Multiple variables | Winer BJ, Brown DR, Michels KM (1991) Statistical Principles in Experimental Design, 3rd ed. McGraw-Hill | Cross-check with statsmodels (`mixedlm`, `anova_lm` on contrast scores); first principles. No published example |
 | Two-way repeated-measures ANOVA | `anova_rm_twoway` | Multiple variables | Greenhouse SW, Geisser S (1959) On methods in the analysis of profile data. Psychometrika 24:95-112 | Cross-check with statsmodels `AnovaRM`. No published example |
 | Correlation (Pearson or Spearman) | `correlation` | XY, Column, Multiple variables | Pearson K (1896) Philos Trans R Soc A 187:253-318; Spearman C (1904) Am J Psychol 15:72-101 | Published: Anscombe's quartet; cross-check with SciPy; exact Spearman P by brute-force enumeration |
@@ -102,21 +102,29 @@ Library routines that compute a result directly:
 | Library routine | Used for |
 |---|---|
 | `scipy.stats.shapiro` | Shapiro-Wilk test (everywhere it appears) |
-| `scipy.stats.bartlett` | Bartlett's test |
-| `scipy.stats.levene(center="median")` | Brown-Forsythe check inside the ANOVA results and the recommendation (the stand-alone *Equal variance tests* analysis uses TorusPlot's own formula) |
+| `scipy.stats.levene(center="median")` | Brown-Forsythe check in the test recommendation, the factorial ANOVA, ANCOVA and mixed repeated-measures ANOVA results, and the nested analysis (the one-way ANOVA results and the stand-alone *Equal variance tests* analysis use TorusPlot's own formula) |
 | `scipy.stats.probplot` | Q-Q plot coordinates |
 | `statsmodels.stats.diagnostic.lilliefors` | Lilliefors P value of the Kolmogorov-Smirnov test |
 | `statsmodels` OLS (`formula.api.ols`) and `anova_lm` | Factorial ANOVA and ANCOVA: model fit and Type II / III table |
 | `statsmodels.api.OLS` | Multiple regression: the least-squares fit |
 | `scipy.optimize.least_squares` | Nonlinear regression and ROUT: the minimiser |
 | `scipy.stats.fisher_exact`, `scipy.stats.contingency.odds_ratio` | Fisher's exact test for 2 x 2 tables; conditional odds ratio with exact CI |
-| `scipy.stats.wilcoxon` | Only the optional Wilcoxon follow-up tests after a Friedman test |
 | `statsmodels.stats.power` (`TTestIndPower`, `TTestPower`, `FTestAnovaPower`) | Power calculations |
 | `statsmodels` `mixedlm` | Only the mixed-model cross-check stored with a nested analysis |
 
 lifelines and scikit-posthocs are installed with TorusPlot but the statistics engine does not call
 them. The test-suite uses them as independent cross-checks (survival; Dunn, Games-Howell and
 Friedman post-hoc tests).
+
+**Numerical range.** Test statistics, P values and standardised effect sizes do not depend on the
+origin or unit of the data. They are therefore computed on rescaled data: a shared location is
+subtracted and the result divided by a power of two (an exact operation). Means, SDs and confidence
+limits are scaled back to the units of the data. "Constant" (no variability) means a spread within
+a few units in the last place of the magnitude of the data; there is no absolute floor, so 1e12 +
+{0.1, 0.3} or {1e-80, 2e-80} are not constant. Paired differences are compared at the rounding
+error of the original values (100.1 - 100 and 1.1 - 1 are the same difference). A quantity that
+cannot be represented as a double-precision number is reported as missing (None) with a warning,
+or the analysis stops with a clear error.
 
 Every analysis returns one result object. Figures, reports and AI features refer to that result by
 its ID. They never carry their own numbers.
@@ -134,7 +142,11 @@ Registry key: `descriptives`.
 - **Skewness and kurtosis.** The adjusted Fisher-Pearson skewness G1 = g1 x sqrt(n(n - 1)) / (n - 2)
   (needs n >= 3) and the sample excess kurtosis G2 = (n - 1) / ((n - 2)(n - 3)) x ((n + 1) g2 + 6)
   (needs n >= 4; 0 for a normal distribution).
-- **Implementation.** TorusPlot's own code; the t quantile from `scipy.stats.t`.
+- **Implementation.** TorusPlot's own code; the t quantile from `scipy.stats.t`. All moments are
+  computed on the values divided by a power of two near their largest magnitude (exact) and scaled
+  back, so the summary is valid over the full double-precision range (about 1e-300 to 1e300). A
+  sum beyond the largest representable number is reported as missing (None); an SD or confidence
+  limit that cannot be represented stops the analysis with an error.
 - **Assumptions.** None are tested. The mean, SD and CI describe roughly symmetric data well; for
   skewed data the median and quartiles are the better summary.
 - **Limitations.** Other programs use other quartile definitions, so quartiles of small samples can
@@ -152,12 +164,14 @@ Registry key: `descriptives`.
 ### 4.1 Normality tests
 
 Registry key: `normality`. The same Shapiro-Wilk check is run inside every parametric analysis.
+On a Multiple variables table, *Groups to check* picks the numeric columns to test (each on its
+own); left empty, *Variable to check* (optionally with *Split by*) is used.
 
 | Test | What is computed | Implementation | Limits |
 |---|---|---|---|
 | Shapiro-Wilk | W statistic; P value by Royston's algorithm | `scipy.stats.shapiro` | Needs n >= 3. P is approximate for n > 5000. |
 | D'Agostino-Pearson | K2 = Z(skewness)^2 + Z(kurtosis)^2, compared with chi-square on 2 df | TorusPlot's own code | Needs n >= 8. The kurtosis part is only roughly calibrated below n = 20. |
-| Kolmogorov-Smirnov | D = largest distance between the sample distribution and a normal curve with the sample mean and SD; **Lilliefors** P value | D in TorusPlot's own code; P from `statsmodels` (`lilliefors`, table method) | Needs n >= 5. The P value is bounded to 0.001 to 0.99. |
+| Kolmogorov-Smirnov | D = largest distance between the sample distribution and a normal curve with the sample mean and SD; **Lilliefors** P value | D in TorusPlot's own code; P from `statsmodels` (`lilliefors`, table method) | Needs n >= 5. The table bounds the P value to 0.001 to 0.99; a value at a bound is shown as "P < 0.001" or "P > 0.99" and flagged (`p_limit`, `p_is_table_limit` in the rows of `extra["table"]`). |
 | Anderson-Darling (optional) | A2 and the modified A\* = A2 (1 + 0.75/n + 2.25/n^2); P from the formulas of D'Agostino and Stephens | TorusPlot's own code | Needs n >= 8. |
 
 - **Why the Lilliefors P value.** The classical Kolmogorov-Smirnov P value assumes that the mean and
@@ -195,11 +209,19 @@ Registry key: `equal_variance`.
 |---|---|---|
 | Brown-Forsythe (headline) | One-way ANOVA F on z = abs(x - group median) | TorusPlot's own code |
 | Levene | The same with z = abs(x - group mean) | TorusPlot's own code |
-| Bartlett | Chi-square statistic on k - 1 df | `scipy.stats.bartlett` |
+| Bartlett | T (below), referred to chi-square on k - 1 df | TorusPlot's own code |
 | F test (two groups only) | F = var(a) / var(b) on (n_a - 1, n_b - 1) df, two-sided | TorusPlot's own code |
 
 Levene and Brown-Forsythe: F = [(N - k) / (k - 1)] x sum_i n_i (zbar_i - zbar)^2 / sum_ij (z_ij - zbar_i)^2,
 on (k - 1, N - k) degrees of freedom.
+
+Bartlett: with the pooled variance s_p^2 = sum (n_i - 1) s_i^2 / (N - k),
+T = [(N - k) ln s_p^2 - sum (n_i - 1) ln s_i^2] / C, C = 1 + (sum 1/(n_i - 1) - 1/(N - k)) / (3 (k - 1)).
+The numerator cannot be negative; a slightly negative value from rounding is set to 0, so equal
+variances give T = 0 and P = 1.
+
+All tests here are invariant to the origin and unit of the data and are computed on rescaled data
+(section 2). When every group has the same SD (to rounding) the result text says so.
 
 - **Assumptions.** Independent observations. Bartlett's test and the F test also assume normal data
   and are very sensitive to non-normality.
@@ -207,8 +229,9 @@ on (k - 1, N - k) degrees of freedom.
   the deviations have no spread within the groups (for example 2 values per group) F is undefined
   and no P value is given. A non-significant result does not prove equal variances.
 - **Validation.** Cross-checks with `scipy.stats.levene` (mean and median centre), `f_oneway` on
-  the absolute deviations, `scipy.stats.bartlett`, Bartlett's formula written out, and a fixed-seed
-  simulation of Bartlett against Brown-Forsythe on heavy-tailed data. No published worked example.
+  the absolute deviations, `scipy.stats.bartlett`, Bartlett's formula written out, and a
+  fixed-seed simulation of Bartlett against Brown-Forsythe on heavy-tailed data. No published
+  worked example.
 - **Primary references.** Levene H (1960) Robust tests for equality of variances. In: Contributions
   to Probability and Statistics, Stanford Univ Press, pp 278-292. Brown MB, Forsythe AB (1974)
   Robust tests for the equality of variances. J Am Stat Assoc 69:364-367. Bartlett MS (1937)
@@ -261,8 +284,12 @@ Registry key: `ttest_paired`.
   t = mean(d) / (SD(d) / sqrt(n)), df = n - 1. Also the Pearson correlation between the pairs (how
   effective the pairing was), Cohen's d_z and Hedges' g_z.
 - **Assumptions and checks.** Independent pairs (stated). Normality of the differences
-  (Shapiro-Wilk). Effective pairing: a positive correlation between the pairs.
+  (Shapiro-Wilk). Effective pairing: a positive correlation between the pairs. The check reports
+  the one-tailed P for a positive correlation; the estimate rows show the two-tailed P of the same
+  correlation. Both are labelled.
 - **Limitations.** Pairs with a missing value are dropped and counted. Needs at least 2 complete pairs.
+  Whether every pair has the same difference is judged at the rounding error of the input values
+  (100.1 - 100 and 1.1 - 1 are the same difference); then no t, P or d_z is given.
 - **Validation.** Published: Student (1908), mean difference 1.58; documented R output
   (t = -4.0621, df = 9, P = 0.002833). Cross-checks: SciPy `ttest_rel`, `pearsonr`.
 - **Primary reference.** Student (1908) Biometrika 6:1-25.
@@ -287,18 +314,22 @@ Registry key: `mann_whitney`.
   distribution-free CI from the order statistics of those differences. Rank-biserial r = 2 U_A /
   (n_a n_b) - 1.
 - **P value.** Exact, from the null distribution of U counted by dynamic programming, when there
-  are no ties and both groups have at most 50 values. Otherwise the normal approximation with tie
-  correction and a continuity correction of 0.5. The result states which.
+  are no ties and both groups have at most 50 values. With ties, exact from the permutation
+  distribution of the (doubled) mid-ranks when both groups have at most 6 values
+  (`EXACT_TIES_MAX_N` in `two_group.py`). Otherwise the normal approximation with tie correction
+  and a continuity correction of 0.5, never reported below the smallest P value the exact test can
+  attain. The result states which.
 - **Assumptions and checks.** Independent observations; values that can be ranked. Similar
   distribution shape (Brown-Forsythe test of spread) is needed only to read the result as a
   difference in medians.
 - **Limitations.** The test compares distributions (mean ranks). It is a test of medians only when
   both distributions have the same shape. With very small groups the smallest possible exact P
-  value can exceed alpha (0.10 for 3 against 3); the result warns. With ties in small samples the
-  normal approximation is rough. The Hodges-Lehmann estimate is skipped above 10,000,000 pairs.
+  value can exceed alpha (0.10 for 3 against 3); the result warns. The Hodges-Lehmann estimate is
+  skipped above 10,000,000 pairs.
 - **Validation.** Documented R output for the sleep data (W = 25.5, P = 0.06933). Cross-checks:
   SciPy `mannwhitneyu` (exact and asymptotic), 800 random data sets with ties, brute-force
-  enumeration of the exact null distribution, brute-force Hodges-Lehmann estimates, coverage
+  enumeration of the exact null distribution and of the tied permutation P value, brute-force
+  Hodges-Lehmann estimates, coverage
   simulations. Published table: critical U for n1 = n2 = 10.
 - **Primary references.** Mann HB, Whitney DR (1947) On a test of whether one of two random
   variables is stochastically larger than the other. Ann Math Stat 18:50-60. Hodges JL, Lehmann EL
@@ -313,18 +344,24 @@ Registry keys: `wilcoxon_signed_rank` (matched pairs) and `wilcoxon_one_sample`.
   size. W+ and W- are the rank sums of the positive and negative differences. The reported
   statistic is W = W+ - W-. Hodges-Lehmann pseudo-median = median of all Walsh averages
   (d_i + d_j) / 2, with a distribution-free CI. Matched-pairs rank-biserial r = (W+ - W-) / (W+ + W-).
-- **Zero differences.** `wilcox` (default) discards them. `pratt` ranks them with the others and
-  then drops their ranks.
+- **Zero differences and ties.** Differences are snapped at the rounding error of the input values:
+  one within its tolerance of zero counts as zero, and absolute differences that agree within their
+  tolerances count as ties (so 5.4 - 5.1 and 5.2 - 4.9 are tied). `wilcox` (default) discards
+  zeros. `pratt` ranks them with the others and then drops their ranks.
 - **P value.** Exact when no two non-zero differences have the same size and there are at most 50
-  of them. Otherwise the normal approximation with tie and continuity correction.
+  of them. With ties, exact over all 2^n sign patterns of the (doubled) mid-ranks when there are at
+  most 6 non-zero differences. With Pratt's method and zeros, the exact P value is conditional on
+  the ranks of the non-zero differences. Otherwise the normal approximation with tie and continuity
+  correction, never reported below the smallest attainable P value 2 / 2^n (1 / 2^n one-tailed).
 - **Assumptions and checks.** Independent pairs (or observations). The differences are distributed
   symmetrically around their median (stated; the sample skewness is reported).
 - **Limitations.** With n non-zero differences the smallest two-sided exact P is 2 / 2^n, so fewer
-  than 6 cannot reach 0.05. The CI of the rank-biserial r uses a Fisher z approximation that
-  collapses to a single point when r is exactly +1 or -1.
+  than 6 cannot reach 0.05; the result warns when the smallest attainable P exceeds the chosen
+  alpha. The CI of the rank-biserial r is a score interval (section 6); when r is exactly +1 or -1
+  it is one-sided with positive width.
 - **Validation.** Documented R output for the sleep data (V = 0, P = 0.009091). Cross-checks: SciPy
   `wilcoxon` (exact; asymptotic with correction; both zero methods), brute-force null distributions,
-  published table: critical T for n = 11.
+  brute-force enumeration of the tied sign-pattern P value, published table: critical T for n = 11.
 - **Primary references.** Wilcoxon F (1945) Individual comparisons by ranking methods. Biometrics
   Bull 1:80-83. Pratt JW (1959) Remarks on zeros and ties in the Wilcoxon signed rank procedures.
   J Am Stat Assoc 54:655-667. Hodges and Lehmann (1963); Bauer (1972), as above.
@@ -336,7 +373,7 @@ All effect sizes are TorusPlot's own code (`torusplot/stats/effect_sizes.py`).
 | Effect size | Formula | Confidence interval |
 |---|---|---|
 | Cohen's d (two groups) | (mean_a - mean_b) / pooled SD | Noncentral t: the noncentrality parameters that put the observed t at the upper and lower tails are converted to d |
-| Hedges' g | d x J(df), with the exact correction J(df) = Gamma(df/2) / (sqrt(df/2) Gamma((df - 1)/2)) | The limits of d times J |
+| Hedges' g | d x J(df), with the exact correction J(df) = Gamma(df/2) / (sqrt(df/2) Gamma((df - 1)/2)) | The noncentral-t interval for the population delta, the same as for d: J applies to the point estimate only |
 | Cohen's d_z (paired) | mean of differences / SD of differences | Noncentral t |
 | Cohen's d (one sample) | (mean - hypothetical value) / SD | Noncentral t |
 | Eta squared | SS_effect / SS_total | Noncentral F (one-way designs): eta squared = ncp / (ncp + df1 + df2 + 1) |
@@ -345,8 +382,8 @@ All effect sizes are TorusPlot's own code (`torusplot/stats/effect_sizes.py`).
 | Partial omega squared | df1 (F - 1) / (df1 (F - 1) + N) | Noncentral F |
 | Generalized eta squared (repeated measures) | SS_effect / (SS_effect + all subject and error SS) | None |
 | Cohen's f | sqrt(eta squared / (1 - eta squared)) | None (used for power) |
-| Rank-biserial r (two groups) | 2 U_A / (n_a n_b) - 1 | Fisher z with SE = sqrt((n_a + n_b + 1) / (3 n_a n_b)) |
-| Matched-pairs rank-biserial r | (W+ - W-) / (W+ + W-) | Fisher z approximation |
+| Rank-biserial r (two groups) | 2 U_A / (n_a n_b) - 1 | Score interval for theta = (r + 1) / 2 (Newcombe 2006, method 5: Hanley-McNeil variance evaluated at the limits), with the variance multiplied by max(1, V_placement / V_model), V_placement the distribution-free placement-value variance (Sen 1960; DeLong et al. 1988); mapped back to r |
+| Matched-pairs rank-biserial r | (W+ - W-) / (W+ + W-) | Score interval from the exact mean and variance of W+ / (n (n + 1) / 2) under a normal-shift working model (Hollander & Wolfe 1999), evaluated at the limits, with the variance multiplied by max(1, V_jackknife / V_model) |
 | Rank epsilon squared (Kruskal-Wallis) | H / (N - 1) | None |
 | Kendall's W (Friedman) | chi-square / (n (k - 1)) | None |
 | Pearson r, Spearman rho | Section 11 | Fisher z |
@@ -363,7 +400,13 @@ All effect sizes are TorusPlot's own code (`torusplot/stats/effect_sizes.py`).
 - **After Welch-type tests** eta squared is given as a description of the sample only, without an
   interval, because the usual interval assumes equal variances.
 - **Limitations.** Hedges' correction does not exist for 1 degree of freedom. Noncentral intervals
-  assume normal data.
+  assume normal data. d and g are not given (None) when the SD is zero to rounding error. The
+  rank-biserial intervals are approximate. Both respect [-1, 1] and, with complete separation
+  (r = +1 or -1), are one-sided with positive width. In simulations the 95% interval for two groups
+  covered the true value in about 93 to 99% of samples (n = 3 to 100 per group), dropping to about
+  90% with only 3 or 4 values per group, or with very unequal variances together with unequal group
+  sizes. The matched-pairs interval covered about 93 to 99% (n = 5 to 100), dropping to about 90%
+  for heavy-tailed differences with very strong effects.
 - **Validation.** `tests/stats/test_effect_sizes.py`: inversion of `scipy.stats.nct` and
   `scipy.stats.ncf` verified at both limits; definitions written out; cross-checks inside the tests
   of each analysis.
@@ -376,20 +419,33 @@ All effect sizes are TorusPlot's own code (`torusplot/stats/effect_sizes.py`).
   Beyond the F test. Psychol Methods 9:164-182. Olejnik S, Algina J (2003) Generalized eta and omega
   squared statistics. Psychol Methods 8:434-447. Hays WL (1963) Statistics for Psychologists.
   Kerby DS (2014) The simple difference formula. Compr Psychol 3:11.IT.3.1. Cureton EE (1956)
-  Rank-biserial correlation. Psychometrika 21:287-290.
+  Rank-biserial correlation. Psychometrika 21:287-290. Newcombe RG (2006) Confidence intervals for
+  an effect size measure based on the Mann-Whitney statistic. Part 1: general issues and
+  tail-area-based methods; Part 2: asymptotic methods and evaluation. Stat Med 25:543-557 and
+  559-573. Hanley JA, McNeil BJ (1982) The meaning and use of the area under a receiver operating
+  characteristic (ROC) curve. Radiology 143:29-36. DeLong ER, DeLong DM, Clarke-Pearson DL (1988)
+  Comparing the areas under two or more correlated receiver operating characteristic curves: a
+  nonparametric approach. Biometrics 44:837-845. Sen PK (1960) On some convergence properties of
+  U-statistics. Calcutta Stat Assoc Bull 10:1-18. Hollander M, Wolfe DA (1999) Nonparametric
+  Statistical Methods, 2nd ed. Wiley.
 
 ## 7. Comparing three or more groups
 
 All tests in this section are TorusPlot's own code (`torusplot/stats/oneway.py`). The inline
-assumption checks call `scipy.stats.shapiro`, `levene(center="median")` and `bartlett`.
+assumption checks are `scipy.stats.shapiro` plus TorusPlot's own Brown-Forsythe and Bartlett tests
+(section 4.2).
 
 ### 7.1 One-way ANOVA
 
 Registry key: `anova_oneway`.
 
-- **What is computed.** F = MS_between / MS_within on (k - 1, N - k) degrees of freedom. The sums of
-  squares are computed on data centred on the grand mean with exactly rounded summation, so large
-  offsets with small variances do not destroy the result. Eta squared and omega squared with
+- **What is computed.** F = MS_between / MS_within on (k - 1, N - k) degrees of freedom. F, P and
+  the effect sizes are computed on rescaled data (section 2); the sums of squares are computed there
+  on data centred on the grand mean with exactly rounded summation, so large offsets with small
+  variances do not destroy the result. Sums of squares and mean squares are scaled back to the units
+  of the data and shown as missing, with a warning, when they fall outside the representable range
+  (for example values near 1e200 or 1e-200). Post-hoc estimates, SEs and CIs are computed on the
+  data divided by a power of two and scaled back. Eta squared and omega squared with
   noncentral-F intervals. Follow-up comparisons: Tukey (default), Dunnett, Games-Howell, or
   pooled-SD t tests with Bonferroni, Sidak, Holm, Holm-Sidak, Benjamini-Hochberg or no adjustment
   (Fisher's LSD).
@@ -497,8 +553,8 @@ mean ranks for rank procedures).
 | Games-Howell | SE = sqrt(s_i^2/n_i + s_j^2/n_j) with Welch-Satterthwaite df; q = sqrt(2) abs(diff) / SE is referred to the studentized range with k groups and that df. | No equal-variance assumption. Every group needs at least 2 values. |
 | Dunn (after Kruskal-Wallis) | z = (Rbar_i - Rbar_j) / sqrt((N(N + 1)/12 - sum(t^3 - t) / (12 (N - 1))) (1/n_i + 1/n_j)); two-sided normal P, then a P value adjustment. | No confidence interval: the standard error holds only under the null hypothesis. |
 | Rank-sum comparisons after Friedman | z = (R_i - R_j) / sqrt(n k (k + 1) / 6) on within-subject rank sums. | No tie correction, which makes the comparisons slightly conservative when there are ties within subjects. No confidence interval. |
-| Wilcoxon comparisons after Friedman | A Wilcoxon signed-rank test per pair (`scipy.stats.wilcoxon`), then a P value adjustment. | The estimate is the Hodges-Lehmann median of the paired differences. |
-| Pairwise t tests | Pooled error variance of all groups (after ANOVA), separate variances (Welch), or paired differences (repeated measures), then a P value adjustment. With no adjustment and pooled variance this is Fisher's LSD. | See 8.2 for the intervals. |
+| Wilcoxon comparisons after Friedman | A Wilcoxon signed-rank test per pair, by the same engine as the two-group Wilcoxon matched-pairs test (section 5.6: zero differences discarded, ties snapped at the input rounding error, exact / exact with ties / normal approximation with tie and continuity correction), then a P value adjustment. Statistic W = W+ - W-. | The estimate is the Hodges-Lehmann median of the paired differences. |
+| Pairwise t tests | Pooled error variance of all groups (after ANOVA), separate variances (Welch), or paired differences (repeated measures), then a P value adjustment. With no adjustment and pooled variance this is Fisher's LSD. | See 8.2 for the intervals. Paired: when the differences are constant to the input rounding error the SE is 0, giving t = infinity and P = 0 (no test if the difference is 0); a warning says so. |
 
 ### 8.2 P value adjustments
 
@@ -555,8 +611,10 @@ Registry keys: `anova_twoway`, `anova_threeway`, `ancova`.
   fits in TorusPlot's own code. Contrasts, Tukey P values, intervals and effect sizes are TorusPlot's
   own code.
 - **Comparisons.** `simple_b_within_a` and the like compare the levels of one factor within each
-  level of the others; `main_a` and the like compare marginal means (unweighted averages of the cell
-  means); `all_cells` compares every cell with every other. Tukey: P = P(Q[k, df] > abs(t) sqrt(2)),
+  level of the others; `main_a` and the like compare estimated marginal (least-squares) means: the
+  fitted model's cell predictions averaged with equal weights, with standard errors from the model's
+  coefficient covariance, so in a model without interaction the comparisons follow the additive fit;
+  `all_cells` compares every cell with every other. Tukey: P = P(Q[k, df] > abs(t) sqrt(2)),
   with k the number of means in one family. The standardized effect of each comparison is
   Hedges' g = difference / sqrt(MS residual) x J(df), with a noncentral-t interval.
 - **ANCOVA.** Model: value = group effect + common slope x covariate + error. Reported: the group
@@ -575,7 +633,7 @@ Registry keys: `anova_twoway`, `anova_threeway`, `ancova`.
   total. Type II main effects assume no interaction; a warning appears when one is significant.
   The models are fixed-effects models. There is no rank-based two-way test.
 - **Validation.** Published: Montgomery, battery-life 3 x 3 experiment (sums of squares, F = 7.91,
-  28.97, 3.56); tooth-growth data of Crampton (1947) (F = 15.572, 92.000, 4.107). Cross-checks:
+  28.97, 3.56). Constructed balanced 2 x 3 data with exact sums of squares. Cross-checks:
   statsmodels `anova_lm` (Type I, II, III) on a hand-written formula, `pairwise_tukeyhsd`,
   `multipletests`, `t_test` on coefficient contrasts; classical balanced formulas; nested fits of a
   hand-built design matrix. **No published worked example is used for the three-way ANOVA or for
@@ -639,8 +697,10 @@ All quantities come from S = E / df_e, the covariance matrix of the orthonormal 
   cannot be tested (warning). With unequal group sizes in a mixed design, Type III gives every group
   equal weight for the within factor and Type II weights groups by size. Designs with more than one
   between factor or more than two within factors are not supported.
-- **Validation.** Published: Field, 8 subjects x 4 conditions ("bushtucker" example): F(3, 21) = 3.79,
-  Mauchly W = 0.136, P = 0.047, Greenhouse-Geisser epsilon 0.533, Huynh-Feldt epsilon 0.666.
+- **Validation.** Constructed 8 subjects x 4 conditions with violated sphericity: F, Mauchly W and
+  chi-square, Greenhouse-Geisser and Huynh-Feldt epsilons and corrected P values agree with
+  first-principles formulas. (An earlier textbook example was reproduced exactly, F(3, 21) = 3.79,
+  W = 0.136, P = 0.047, epsilons 0.533 / 0.666, then removed for licensing reasons, D-030.)
   Cross-checks: statsmodels `AnovaRM` (one and two within factors), `mixedlm` for the balanced mixed
   design (agreement to about 1e-3, limited by the optimiser), `anova_lm` on contrast scores for the
   unbalanced mixed design, SciPy `ttest_rel` and `ttest_ind`. First principles: textbook
@@ -798,7 +858,9 @@ Registry keys: `nonlinear_regression`, `compare_fits`, `compare_curve_parameter`
   association; one-site binding (specific, total); exponential growth; Gaussian; straight line;
   quadratic. Dose-response models are fitted on LogEC50.
 - **User-defined equations.** The text is parsed, never executed. Only numbers, X, parameter names,
-  `+ - * / ^`, brackets and a fixed list of mathematical functions are accepted.
+  `+ - * / ^`, brackets and a fixed list of mathematical functions are accepted. `pi` is the
+  constant 3.14159...; a bare `e` is a **parameter** like any other letter (write `exp(1)` for
+  Euler's number), and the result notes how each constant was read.
 - **Weighting.** none; 1/Y; 1/Y^2; 1/SD^2 (the SD of the replicates at each X). **The 1/Y and 1/Y^2
   weights use the observed Y values.** Some other packages weight by the predicted Y, which gives
   slightly different estimates.
@@ -889,7 +951,9 @@ Registry key: `survival`. All estimators are TorusPlot's own code.
   reaches 0.
 - **Median survival.** The first time the curve is at or below 50%. Its CI (Brookmeyer and Crowley)
   runs from the first time the lower band is at or below 50% to the first time the upper band is.
-  "Not reached" is reported when that never happens. When the curve is exactly 50% over an interval,
+  "Not reached" is reported when that never happens; in particular, when the upper band never drops
+  to 50% (for example a very small group, or once the curve reaches 0) the upper limit is "not
+  reached" rather than the last event time, as the Brookmeyer-Crowley definition requires. When the curve is exactly 50% over an interval,
   TorusPlot reports the first time; some programs report the midpoint, and a note says so.
 - **Log-rank (Mantel-Cox) test.** At each event time, group i is expected to have
   E_ij = d_j n_ij / n_j events. U_i = sum_j w_j (d_ij - E_ij), with hypergeometric covariance V.
@@ -906,7 +970,7 @@ Registry key: `survival`. All estimators are TorusPlot's own code.
 - **Limitations.** The event column must hold only 1 (event) and 0 (censored). The hazard ratio and
   the power of the log-rank test rest on proportional hazards; crossing curves make a single hazard
   ratio misleading. No Cox regression, no covariates, no stratified test. The log-rank test for
-  trend (Tarone 1975) exists in the code but is not offered in the app menu.
+  trend (Tarone 1975) is available as the `trend` option for ordered groups (for example doses).
 - **Validation.** Published: the 6-mercaptopurine leukaemia trial of Freireich et al. (1963):
   Kaplan-Meier estimates of the treated arm, medians 23 and 8 weeks, log-rank chi-square 16.79.
   Cross-checks: lifelines (`KaplanMeierFitter`, `logrank_test`, `multivariate_logrank_test`,
@@ -989,10 +1053,11 @@ Registry key: `chi_square_trend`. TorusPlot's own code.
   chi2_trend = N (N sum x_i s_i - R sum n_i s_i)^2 / (R (N - R) (N sum n_i s_i^2 - (sum n_i s_i)^2)),
   on 1 df. This equals N r^2 for the correlation r between outcome and score. The rest of the
   ordinary chi-square (k - 2 df) tests departure from a straight-line trend.
-- **Assumptions.** Ordered categories, scored 1, 2, ..., k in table order; expected counts of at
-  least 5; counts; independent observations.
-- **Limitations.** In the app the scores are always 1 to k, so the test treats the steps between
-  groups as equal. TorusPlot reports the Cochran-Armitage form N r^2; some packages report
+- **Assumptions.** Ordered categories with scores that reflect their spacing (option `scores`, for
+  example "0, 1, 5"; default 1, 2, ..., k in table order); expected counts of at least 5; counts;
+  independent observations.
+- **Limitations.** With the default scores the test treats the steps between groups as equal.
+  TorusPlot reports the Cochran-Armitage form N r^2; some packages report
   (N - 1) r^2, which is slightly smaller.
 - **Validation.** Published: infant malformation by maternal alcohol consumption (Graubard and Korn
   1987, as analysed by Agresti): r = 0.0142, M^2 = 6.57 after conversion by (N - 1)/N. Cross-checks:
@@ -1046,7 +1111,10 @@ Registry key: `outliers_grubbs`. TorusPlot's own code.
 - **Limitations.** The P value is a Bonferroni-type bound: accurate for small P values,
   conservative otherwise. The test looks for a single outlier; two or more can mask each other. The
   iterative option repeats the test at the same alpha each round, so the overall false-positive risk
-  is higher than alpha. Needs at least 3 values, and has little power with very few.
+  is higher than alpha. Needs at least 3 values, and has little power with very few. When n - 1
+  values are identical, G = (n - 1) / sqrt(n), its largest possible value, whatever the size of the
+  deviation; the result then warns that the flag reflects tied values (measurement resolution),
+  not an extreme value.
 - **Validation.** NIST/SEMATECH e-Handbook of Statistical Methods, section 1.3.5.17
   (https://www.itl.nist.gov/div898/handbook/eda/section3/eda35h1.htm), Tietjen and Moore data:
   G = 2.4687. Published critical values (Grubbs and Beck 1972): n = 10, 2.290; n = 50, 3.128.
@@ -1137,7 +1205,11 @@ they need no data table. In the app: *Power and sample size calculator* on page 
   tail is taken as 0.
 - **Effect sizes.** t tests: Cohen's d (for paired designs d_z: mean of the differences / SD of the
   differences). ANOVA: Cohen's f = SD of the group means / common within-group SD.
-- **Limitations.** Sample sizes are per group and assume equal groups for the ANOVA. The ANOVA power
+- **Limitations.** n is per group (unpaired, ANOVA), pairs (paired) or values (one sample). For
+  unequal groups in the unpaired design n is the size of group 1, with group 2 = ratio x n1. The
+  ANOVA assumes equal groups. A solved n is given exactly and rounded up; an entered n is reported
+  as entered. For a lower-tailed test the detectable effect is described as "or more negative".
+  The ANOVA power
   is for the overall F test, not for pairwise comparisons. No power calculations for rank tests,
   proportions, correlation, survival, repeated measures or factorial designs. The answer depends
   entirely on the assumed effect size.
@@ -1164,7 +1236,13 @@ Function `recommend_test` in `torusplot/stats/recommend.py`. Not a registered an
 - **Limitations.** Choosing a test from a pre-test of the same data is a convention, not a
   guarantee: pre-tests have little power in small samples, and the two-stage procedure changes the
   error rates of the final test somewhat. Welch-type tests are always listed as alternatives. For
-  Multiple variables tables the proposal depends on column names and types. The P values of these
+  Multiple variables tables the proposal depends on column names and types, matched as whole words
+  (so a factor called "Exposure" is not mistaken for an "exp"eriment column) and confirmed by the
+  structure of the data: a column is treated as a biological replicate only if each group x
+  replicate combination holds several rows, and as a subject ID only if each subject appears once
+  per level of a within-subject factor (then a repeated-measures or mixed ANOVA is proposed). Sparse
+  contingency tables (Cochran's rule fails) are offered Fisher's exact test, which TorusPlot computes
+  for r x c tables. Small-sample cautions give the smallest attainable P value of each rank test. The P values of these
   checks can differ from the checks printed with the analysis itself, which uses plain residuals.
 - **Validation.** `tests/stats/test_recommend.py` checks each branch on constructed data.
 - **References.** Welch BL (1947) Biometrika 34:28-35. Ruxton GD (2006) The unequal variance t-test
@@ -1186,7 +1264,7 @@ Function `recommend_test` in `torusplot/stats/recommend.py`. Not a registered an
 | Missing values | Empty cells, text in a numeric column and non-finite numbers are ignored and counted in the data notes. Unpaired analyses drop single values. Paired and repeated-measures analyses drop the whole pair or subject. Correlation matrices use pairwise-complete rows. |
 | Exclusions | Only values that the user excluded explicitly are left out. The raw table is never changed. Every result run afterwards carries a data note that lists the excluded cells, and the methods paragraph repeats it. |
 | Approximate data | A table digitized from an image is marked approximate. Analyses on it are refused unless the user overrides; the result is then flagged in every report. |
-| Exact and asymptotic P values for rank tests | *Exact*: the P value is computed from the complete null distribution of the statistic (every possible arrangement of the ranks). TorusPlot uses it for Mann-Whitney (no ties, both groups at most 50), Wilcoxon signed-rank (no tied differences, at most 50 non-zero differences) and Spearman (no ties, n at most 9). *Asymptotic*: a normal, t or chi-square approximation that becomes accurate as n grows; used with ties, with larger samples, and always for Kruskal-Wallis, Friedman and Dunn's test. Each result states which was used. |
+| Exact and asymptotic P values for rank tests | *Exact*: the P value is computed from the complete null distribution of the statistic (every possible arrangement of the ranks). TorusPlot uses it for Mann-Whitney (no ties and both groups at most 50; with ties, both groups at most 6, from the permutation distribution of the mid-ranks), Wilcoxon signed-rank (no tied differences and at most 50 non-zero differences; with ties, at most 6 non-zero differences, over all sign patterns of the mid-ranks) and Spearman (no ties, n at most 9). *Asymptotic*: a normal, t or chi-square approximation that becomes accurate as n grows; used with ties in larger samples, with larger samples, and always for Kruskal-Wallis, Friedman and Dunn's test. The normal approximations of the Mann-Whitney and Wilcoxon tests are never reported below the smallest P value the exact test can attain. Each result states which was used. |
 | Continuity correction | Applied in the normal approximations of the Mann-Whitney and Wilcoxon tests and, by default, as Yates' correction in 2 x 2 chi-square tests. |
 | Number format | About four significant digits in the interpretation text. Full precision is kept in the result object and in the project file. |
 | Reproducibility | The same data and options always give the same numbers. Random numbers are used in two places only, each with a fixed seed: the restarts of a curve fit whose first attempt failed, and the Monte Carlo estimate of Fisher's exact test for tables too large to enumerate. |
@@ -1221,7 +1299,5 @@ a dedicated statistics package or ask a statistician.
 - **Power calculations** other than for t tests and the one-way ANOVA.
 - **Curve fitting with more than one X variable**, global fits that share several parameters, and
   robust curve fitting or ROUT for curves in the app.
-- **Custom scores for the chi-square trend test** and the **log-rank test for trend** in the app
-  (both exist in the code but are not in the menu).
 - **Data transformations in the app** (log, normalisation). Transform the values in your
   spreadsheet before you paste them.

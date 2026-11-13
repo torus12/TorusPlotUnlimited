@@ -679,3 +679,62 @@ def test_fisher_with_large_counts_runs():
     assert huge.parameter("Odds ratio (conditional MLE)").value is None
     assert any("could not be computed" in n for n in huge.data_notes)
     assert huge.parameter("Odds ratio").value == pytest.approx(1e9 / (1e9 + 5e4), rel=1e-12)
+
+
+# =============================================================================
+# Review item c: custom category scores for the trend test
+# =============================================================================
+def test_trend_scores_option_of_the_registered_analysis():
+    spec = registry.get_analysis("chi_square_trend")
+    param = next(p for p in spec.params if p.name == "scores")
+    assert param.kind == "text" and param.default == "" and param.optional
+    assert "0, 1, 5" in param.help and "equally spaced" in param.help
+    counts = [[2, 18], [5, 15], [9, 11], [15, 5]]
+    table = ContingencyTable.from_counts("t", counts, ["0 mg", "1 mg", "5 mg", "25 mg"], ["Responder", "None"])
+    default = run_analysis(table, "chi_square_trend")
+    assert default.extra["scores"] == [1.0, 2.0, 3.0, 4.0] and default.extra["scores_source"].startswith("equally")
+    assert "enter the real values" in next(a for a in default.assumptions if a.name.startswith("Ordered")).detail
+    assert run_analysis(table, "chi_square_trend", scores="  ").statistic == pytest.approx(default.statistic)
+
+    res = run_analysis(table, "chi_square_trend", scores="0, 1, 5, 25")
+    assert res.extra["scores"] == [0.0, 1.0, 5.0, 25.0] and res.params["scores"] == "0, 1, 5, 25"
+    # reference: N r^2 between outcome (1 = responder) and the score, on the expanded data
+    y = np.concatenate([[1] * a + [0] * b for a, b in counts])
+    s = np.concatenate([[v] * 20 for v in (0, 1, 5, 25)])
+    assert res.statistic == pytest.approx(y.size * np.corrcoef(y, s)[0, 1] ** 2, rel=1e-10)
+    assert res.p_value == pytest.approx(stats.chi2.sf(res.statistic, 1), rel=1e-12)
+    assert res.statistic != pytest.approx(default.statistic, rel=1e-3)
+    # statsmodels' ordinal association test with the same scores gives the same statistic up to N / (N - 1)
+    sm_res = Table(np.array(counts)).test_ordinal_association(row_scores=np.array([0.0, 1, 5, 25]),
+                                                               col_scores=np.array([1.0, 0.0]))
+    assert res.statistic == pytest.approx(sm_res.zscore**2 * y.size / (y.size - 1), rel=1e-9)
+    assert "scores you entered (0, 1, 5, 25" in next(a for a in res.assumptions if a.name.startswith("Ordered")).detail
+    assert "category scores 0, 1, 5, 25" in res.methods_text
+    assert any("entered by the user" in n and "25 mg = 25" in n for n in res.data_notes)
+    assert "per unit of the entered scores" in res.interpretation
+    # separators, lists and a linear change of the scores
+    for alt in ("0;1;5;25", "0 1 5 25", [0, 1, 5, 25], "10, 12, 20, 60"):
+        assert run_analysis(table, "chi_square_trend", scores=alt).statistic == pytest.approx(res.statistic, rel=1e-10)
+    json.loads(res.model_dump_json())
+
+
+@pytest.mark.parametrize("bad, message", [
+    ("0, 1, 5", "one numeric score for each of the 4"),
+    ("0, 1, 5, 25, 100", "one numeric score for each of the 4"),
+    ("0, low, 5, 25", "'low' is not a number"),
+    ("0, 1, inf, 25", "finite"),
+    ("3, 3, 3, 3", "identical"),
+])
+def test_trend_scores_are_validated_with_a_clear_message(bad, message):
+    table = ContingencyTable.from_counts("t", [[2, 18], [5, 15], [9, 11], [15, 5]],
+                                         ["a", "b", "c", "d"], ["Yes", "No"])
+    with pytest.raises(StatsError, match=message):
+        run_analysis(table, "chi_square_trend", scores=bad)
+
+
+def test_trend_scores_out_of_order_are_allowed_but_flagged():
+    table = ContingencyTable.from_counts("t", [[2, 18], [5, 15], [9, 11], [15, 5]],
+                                         ["a", "b", "c", "d"], ["Yes", "No"])
+    res = run_analysis(table, "chi_square_trend", scores="1, 3, 2, 4")
+    assert any("not in steadily increasing" in w for w in res.warnings)
+    assert not any("steadily increasing" in w for w in run_analysis(table, "chi_square_trend", scores="4, 3, 2, 1").warnings)

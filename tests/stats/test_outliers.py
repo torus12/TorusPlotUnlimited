@@ -142,6 +142,33 @@ def test_grubbs_edge_cases():
     assert np.array_equal(data, NIST)
 
 
+def test_grubbs_flag_caused_by_identical_values_is_explained():
+    """When n - 1 values are identical, G equals its maximum (n - 1) / sqrt(n) whatever the
+    size of the deviation, so the flag reflects ties / measurement resolution; the warning
+    says so and does not claim that a value 'can hardly ever be flagged'."""
+    for values in ([10.1, 10.1, 10.2], [10.1, 10.1, 10.3, 10.1], [5.0, 5.0, 5.0, 5.0, 5.0, 5.001]):
+        res = ol.grubbs_test(values)
+        n = len(values)
+        assert res["g"] == pytest.approx((n - 1) / math.sqrt(n))
+        assert res["is_outlier"] is True
+        assert any("resolution" in w and "identical" in w for w in res["warnings"])
+        assert not any("hardly ever" in w for w in res["warnings"])
+    plain = ol.grubbs_test([1.0, 2.0, 3.0])
+    assert plain["is_outlier"] is False and any("little power" in w for w in plain["warnings"])
+    assert not any("resolution" in w for w in plain["warnings"])
+
+
+def test_outliers_underflow_safe_for_tiny_values():
+    """[0, 0, 1.1e-153] once crashed (squares underflow to 0 and the SD came out 0): the
+    computations are rescaled, so the spread is real and the result is finite."""
+    res = ol.grubbs_test([0.0, 0.0, 1.1e-153])
+    assert res["sd"] == pytest.approx(1.1e-153 / math.sqrt(3.0), rel=1e-12)
+    assert res["g"] == pytest.approx(2.0 / math.sqrt(3.0), rel=1e-12)
+    out = ol.grubbs_outliers({"a": [0.0, 0.0, 1.1e-153]}).finalize()
+    assert out.extra["flagged"][0]["row"] == 2
+    json.loads(out.model_dump_json())
+
+
 def test_grubbs_outliers_result():
     groups = {"A": [np.nan, *NIST], "B": MASKED, "C": [1.0, 2.0], "D": [3.0, 3.0, 3.0, 3.0]}
     res = ol.grubbs_outliers(groups).finalize()

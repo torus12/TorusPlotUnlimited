@@ -568,6 +568,75 @@ def test_registry_normality_multiple_variables_table():
                      "normality", column="y", by="g")
 
 
+def test_registry_normality_groups_option_on_multiple_variables_table():
+    """'Groups to check' names the numeric columns of a multiple-variables table; it is
+    never silently ignored (audit defect 16)."""
+    frame = pd.DataFrame({"dose": [1, 1, 2, 2, 2, 1, 1, 2, 2, 1],
+                          "y": [1.0, 2.5, 3.1, 4.7, 5.2, 6.8, 7.3, 8.9, 9.4, 10.6],
+                          "z": [3.0, 1.0, 4.0, 1.0, 5.0, 9.0, 2.0, 6.0, 5.0, 3.0],
+                          "label": list("abcdefghij")})
+    table = MultipleVariablesTable("mv", frame)
+    res = run_analysis(table, "normality", groups=["y"])
+    assert list(res.n) == ["y"]
+    assert res.assumptions[0].p_value == pytest.approx(stats.shapiro(frame["y"]).pvalue)
+    assert list(run_analysis(table, "normality", groups=["z", "y"]).n) == ["z", "y"]
+    assert list(run_analysis(table, "normality", groups=["y"], column="y").n) == ["y"]
+    for bad in ({"groups": ["nope"]}, {"groups": ["label"]}, {"groups": ["y"], "column": "z"},
+                {"groups": ["y"], "by": "dose"}):
+        with pytest.raises(StatsError):
+            run_analysis(table, "normality", **bad)
+
+
+def test_lilliefors_table_limits_are_shown_as_bounds():
+    """The Lilliefors table is bounded to 0.001 - 0.99: the text says "P < 0.001" /
+    "P > 0.99" and the result table flags the bound."""
+    extreme = am.normality_tests({"x": np.random.default_rng(3).exponential(size=300) ** 3}, tests="ks")
+    perfect = am.normality_tests({"x": stats.norm.ppf((np.arange(1, 201) - 0.5) / 200)}, tests="ks")
+    for res, limit in ((extreme, "< 0.001"), (perfect, "> 0.99")):
+        check = res.assumptions[0]
+        assert f"(P {limit})" in check.detail
+        row = res.extra["table"][0]
+        assert row["p_limit"] == limit and row["p_is_table_limit"] is True
+    normal = am.normality_tests({"x": NORMAL}, tests="ks")
+    assert normal.extra["table"][0]["p_limit"] is None and normal.extra["table"][0]["p_is_table_limit"] is False
+
+
+def test_variance_tests_with_large_offset_and_extreme_scale():
+    """Levene / Brown-Forsythe / Bartlett are invariant to origin and unit: data with an
+    offset of 1e12 (exactly representable deviations) or values of order 1e200 / 1e-200
+    give the statistics of the deviations / unscaled values (computed by scipy)."""
+    dev_a = np.array([0, 8, 3, 12, 5, 10, 1, 7]) / 1024.0
+    dev_b = np.array([0, 400, 150, 600, 250, 500, 50, 350]) / 1024.0
+    for center in ("mean", "median"):
+        ref = stats.levene(dev_a, dev_b, center=center)
+        res = am.levene_test([1e12 + dev_a, 1e12 + dev_b], center=center)
+        assert res["statistic"] == pytest.approx(ref.statistic, rel=1e-9)
+    groups = [A, B, C]
+    for scale in (1e200, 1e-200):
+        scaled = [g * scale for g in groups]
+        assert am.brown_forsythe_test(scaled)["statistic"] == pytest.approx(
+            stats.levene(*groups, center="median").statistic, rel=1e-9)
+        assert am.bartlett_test(scaled)["statistic"] == pytest.approx(stats.bartlett(*groups).statistic, rel=1e-9)
+        res = am.equal_variance_tests({"a": scaled[0], "b": scaled[1]})
+        f = am.f_test_two_variances(scaled[0], scaled[1])["statistic"]
+        assert f == pytest.approx(np.var(A, ddof=1) / np.var(B, ddof=1), rel=1e-9)
+        assert res.statistic == pytest.approx(stats.levene(A, B, center="median").statistic, rel=1e-9)
+
+
+def test_bartlett_equal_variances_is_zero_and_text_for_equal_sds():
+    """Equal variances (shifted copies): T = 0 exactly (rounding cannot make it negative),
+    P = 1, and the summary says the SDs are the same instead of "a 1-fold difference"."""
+    base = np.array([1.1, 2.3, 3.2, 4.8, 5.9])
+    res = am.bartlett_test({"a": base, "b": base + 1000.0, "c": base + 1e6})
+    assert res["statistic"] == pytest.approx(0.0, abs=1e-9) and res["statistic"] >= 0.0
+    assert res["p_value"] == pytest.approx(1.0, abs=1e-9)
+    summary = am.equal_variance_tests({"a": base, "b": base + 1000.0})
+    assert "Every group has the same SD" in summary.interpretation
+    assert "1-fold" not in summary.interpretation
+    flat = am.equal_variance_tests({"a": [1.0, 1.0, 1.0], "b": [2.0, 2.0, 2.0]})
+    assert "No group shows any variability" in flat.interpretation
+
+
 def test_registry_equal_variance():
     table = ColumnTable.from_dict("col", {"A": A, "B": B, "C": C})
     res = run_analysis(table, "equal_variance")

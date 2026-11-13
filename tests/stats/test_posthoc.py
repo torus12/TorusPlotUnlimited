@@ -610,23 +610,66 @@ def test_friedman_posthoc_matches_scikit_posthocs(adjust, sp_name):
     assert not res.warnings
 
 
+def test_paired_pairwise_t_judges_constant_differences_at_the_data_rounding_error():
+    """Every difference is exactly 0.1 (100.1 - 100, ..., 1.1 - 1): SE = 0 and t infinite
+    by the zero-SE convention, not a huge t from binary rounding noise; real but small
+    differences on a large offset are still analysed."""
+    groups = {"A": np.array([100.1, 200.1, 300.1, 1.1]), "B": np.array([100.0, 200.0, 300.0, 1.0])}
+    comp = ph.pairwise_t(groups, paired=True, adjust="none").comparisons[0]
+    assert comp.se == 0.0 and math.isinf(comp.statistic) and comp.p_value == 0.0
+    assert comp.estimate == pytest.approx(0.1, abs=1e-12)
+    same = ph.pairwise_t({"A": groups["A"], "B": groups["A"].copy()}, paired=True, adjust="none")
+    assert same.comparisons[0].statistic is None and same.comparisons[0].p_value is None
+    a = 1e12 + np.array([0.0, 0.25, 0.5, 0.75, 1.0])
+    b = 1e12 + np.array([0.125, 0.25, 0.25, 0.5, 0.5])
+    comp = ph.pairwise_t({"A": a, "B": b}, paired=True, adjust="none").comparisons[0]
+    ref = stats.ttest_rel(a - 1e12, b - 1e12)
+    assert comp.statistic == pytest.approx(ref.statistic, rel=1e-9)
+
+
+def _signed_rank_normal_p_first_principles(d: np.ndarray) -> tuple[float, float]:
+    """(W+ - W-, two-sided P) of the signed-rank test by the normal approximation with tie
+    correction and continuity correction, zero differences discarded (Wilcoxon 1945;
+    tie term sum(t^3 - t) / 48), written out here independently of the application."""
+    d = d[d != 0]
+    n = d.size
+    ranks = stats.rankdata(np.abs(d))
+    w_plus, w_minus = ranks[d > 0].sum(), ranks[d < 0].sum()
+    _, counts = np.unique(np.abs(d), return_counts=True)
+    var = n * (n + 1) * (2 * n + 1) / 24.0 - float(np.sum(counts**3 - counts)) / 48.0
+    z = max(abs(w_plus - n * (n + 1) / 4.0) - 0.5, 0.0) / math.sqrt(var)
+    return float(w_plus - w_minus), float(2.0 * stats.norm.sf(z))
+
+
 def test_friedman_posthoc_wilcoxon_option():
+    """The Wilcoxon comparisons after the Friedman test are the application's own
+    two-group Wilcoxon matched-pairs signed-rank test on each pair (documented method:
+    zeros discarded, normal approximation with tie + continuity correction for these 22
+    tied subjects), checked against a first-principles computation, the two-group test,
+    and the Holm adjustment of statsmodels."""
+    from torusplot.stats import two_group as tg
+
     res = ph.friedman_posthoc(ROUNDING_TIMES, ROUNDING_NAMES, adjust="holm", method="wilcoxon")
     raw = []
     for c in res.comparisons:
         i, j = ROUNDING_NAMES.index(c.group_a), ROUNDING_NAMES.index(c.group_b)
-        d = ROUNDING_TIMES[:, i] - ROUNDING_TIMES[:, j]
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            ref = stats.wilcoxon(d)
-        assert c.statistic == pytest.approx(ref.statistic) and c.statistic_name == "W"
-        assert c.p_value == pytest.approx(ref.pvalue, rel=1e-10)
+        # the data have two decimals: round the differences to remove binary rounding noise
+        d = np.round(ROUNDING_TIMES[:, i] - ROUNDING_TIMES[:, j], 10)
+        w, p = _signed_rank_normal_p_first_principles(d)
+        assert c.statistic_name == "W" and c.statistic == pytest.approx(w)
+        assert c.p_value == pytest.approx(p, rel=1e-10)
+        two = tg.wilcoxon_signed_rank(ROUNDING_TIMES[:, i], ROUNDING_TIMES[:, j])
+        assert not two.extra["exact"]
+        assert c.p_value == pytest.approx(two.p_value, rel=1e-12)
+        assert c.statistic == pytest.approx(two.statistic)
         walsh = [(d[a] + d[b]) / 2 for a in range(d.size) for b in range(a, d.size)]
         assert c.estimate == pytest.approx(np.median(walsh))
-        raw.append(ref.pvalue)
+        raw.append(p)
     assert [c.p_adjusted for c in res.comparisons] == pytest.approx(
         multipletests(raw, method="holm")[1], rel=1e-9)
     assert res.correction == "Wilcoxon signed-rank tests, Holm"
+    assert any("normal approximation with tie correction and continuity correction" in w
+               for w in res.warnings)
     assert ph.friedman_posthoc(ROUNDING_TIMES, ROUNDING_NAMES, adjust="none",
                                method="wilcoxon").correction.endswith("(unadjusted)")
     # identical columns: the signed-rank test is undefined for that pair
@@ -634,6 +677,22 @@ def test_friedman_posthoc_wilcoxon_option():
     same = ph.friedman_posthoc(data, ["a", "b", "c"], method="wilcoxon")
     assert same.comparisons[0].p_value is None and same.comparisons[0].statistic is None
     assert same.comparisons[1].p_value is not None
+
+
+def test_friedman_posthoc_wilcoxon_small_samples_use_the_two_group_exact_rules():
+    """Small samples: exact P values (untied: tabulated distribution; tied: permutation
+    distribution of the mid-ranks), identical to the two-group signed-rank test."""
+    from torusplot.stats import two_group as tg
+
+    data = np.array([[1.0, 2.5, 3.0], [2.0, 2.0, 5.0], [3.0, 4.5, 3.5], [4.0, 6.0, 8.0],
+                     [5.0, 5.5, 9.5], [6.0, 8.0, 7.0]])
+    res = ph.friedman_posthoc(data, ["a", "b", "c"], adjust="none", method="wilcoxon")
+    for c in res.comparisons:
+        i, j = "abc".index(c.group_a), "abc".index(c.group_b)
+        two = tg.wilcoxon_signed_rank(data[:, i], data[:, j])
+        assert two.extra["exact"]
+        assert c.p_value == pytest.approx(two.p_value, rel=1e-12)
+        assert c.statistic == pytest.approx(two.statistic)
 
 
 def test_friedman_posthoc_bad_input():

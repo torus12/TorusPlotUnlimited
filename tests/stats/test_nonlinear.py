@@ -1136,3 +1136,189 @@ def test_registry_compare_fits_and_compare_curve_parameter():
     assert top.extra["shared_parameter"] == "Top" and top.p_value > 0.01
     with pytest.raises(StatsError, match="at least two"):
         run_analysis(table, "compare_curve_parameter", series=["Free drug"])
+
+
+# =============================================================================
+# Audit part 2: B7 ('e' is a parameter), B9 (ties), D1 (IC50 labels), units
+# =============================================================================
+def test_user_equation_parameter_named_e_is_fitted_and_explained():
+    rng = np.random.default_rng(0)
+    x = np.linspace(-2, 2, 25)
+    y = 1 + 2 * x - 0.5 * x**2 + 0.3 * x**3 + 0.7 * x**4 + rng.normal(0, 0.05, 25)
+    res = fit_curve(x, y, "user_defined", equation="Y = a + b*x + c*x^2 + d*x^3 + e*x^4")
+    assert [p.name for p in res.parameters] == ["a", "b", "c", "d", "e"]
+    coef = np.polyfit(x, y, 4)[::-1]  # independent least-squares solution
+    assert [p.value for p in res.parameters] == pytest.approx(coef, rel=1e-6)
+    assert res.extra["goodness_of_fit"]["r_squared"] > 0.99
+    assert any("'e'" in n and "Euler" in n and "exp(1)" in n for n in res.data_notes)
+    assert "not Euler" in res.parameter("e").unit_note
+    # Euler's number is exp(1); pi stays a constant and the result says so
+    growth = fit_curve(x, 3.0 * np.exp(0.4 * x) + rng.normal(0, 0.01, 25), "user_defined",
+                       equation="A * exp(1)^(k*x)", initial="A=1, k=0.1")
+    assert [p.name for p in growth.parameters[:2]] == ["A", "k"]
+    assert growth.parameter("k").value == pytest.approx(0.4, abs=0.01)
+    assert not any("Euler" in n for n in growth.data_notes)
+    wave = fit_curve(x, 2.0 * np.sin(2 * np.pi * x / 4) + rng.normal(0, 0.01, 25), "user_defined",
+                     equation="A * sin(2 * pi * x / 4)")
+    assert [p.name for p in wave.parameters] == ["A"]
+    assert any("3.14159" in n for n in wave.data_notes)
+    # the tooltip of the equation box tells users about both names
+    spec = next(p for p in __import__("torusplot.stats.registry", fromlist=["x"]).get_analysis(
+        "nonlinear_regression").params if p.name == "equation")
+    assert "exp(1)" in spec.help and "pi" in spec.help
+
+
+def _binding_data(seed=2):
+    rng = np.random.default_rng(seed)
+    x = np.array([0.5, 1, 2, 4, 8, 16, 32, 64.0] * 2)
+    return x, 100 * x / (5 + x) + rng.normal(0, 2, x.size)
+
+
+def test_compare_fits_declares_no_winner_between_identical_fits():
+    """'One site: specific binding' and 'Michaelis-Menten' are the same function."""
+    x, y = _binding_data()
+    res = compare_fits(x, y, "one_site_binding_specific", "michaelis_menten")
+    ak = res.extra["akaike"]
+    assert abs(ak["delta_aicc"]) < 1e-6 and ak["probability_simple"] == pytest.approx(0.5, abs=1e-6)
+    assert res.extra["preferred"] == "none" and res.extra["shown"] == "simple"
+    assert res.extra["same_number_of_parameters"] is True and "tie" in res.extra["preferred_basis"]
+    text = res.interpretation
+    assert "fit these data equally well" in text and "do not distinguish" in text
+    for banned in ("is preferred", "more likely to be correct", "simpler", "more complex"):
+        assert banned not in text
+    assert [row["model"] for row in res.extra["comparison"]] == ["first", "second"]
+    assert [e.target.split(":")[0] for e in res.effect_sizes] == ["first model", "second model"]
+    assert res.extra["model"] == "one_site_binding_specific"  # the first model's curve is shown
+    assert_strict_json(res)
+
+
+def test_compare_fits_wording_for_equal_parameter_counts_and_weak_evidence():
+    x, y = _binding_data()
+    # same number of parameters, clearly different fits: a preference, but no "simpler"
+    res = compare_fits(x, y, "michaelis_menten", "exponential_growth")
+    assert res.extra["same_number_of_parameters"] is True and res.extra["preferred"] in {"simple", "complex"}
+    assert "simpler" not in res.interpretation and "more complex" not in res.interpretation
+    assert ("first model" in res.interpretation) or ("second model" in res.interpretation)
+    assert "is preferred" in res.interpretation
+    # different numbers of parameters keep the usual words
+    nested = compare_fits(x, y, "one_site_binding_specific", "one_site_binding_total")
+    assert "simpler" in nested.interpretation and nested.extra["same_number_of_parameters"] is False
+    assert [row["model"] for row in nested.extra["comparison"]] == ["simpler", "more complex"]
+    # an AICc difference below 2 is reported as weak evidence
+    rng = np.random.default_rng(11)
+    xs = np.linspace(1, 10, 12)
+    for seed in range(40):
+        rng = np.random.default_rng(seed)
+        ys = 2 + 0.5 * xs + rng.normal(0, 1, xs.size)
+        weak = compare_fits(xs, ys, "linear", "one_phase_association", nested=False)
+        delta = weak.extra["akaike"]["delta_aicc"]
+        if delta is not None and 1e-3 < abs(delta) < 2:
+            assert "weak evidence" in weak.interpretation
+            break
+    else:  # pragma: no cover - the loop finds a case within a few seeds
+        pytest.fail("no data set with a small AICc difference was generated")
+
+
+def test_ic50_label_covers_descriptions_and_summary():
+    rng = np.random.default_rng(21)
+    conc = np.repeat(np.array([1e-9, 3e-9, 1e-8, 3e-8, 1e-7, 3e-7, 1e-6, 3e-6, 1e-5]), 3)
+    y = 5 + 95 / (1 + (conc / 1e-7) ** 1.2) + rng.normal(0, 4, conc.size)
+    res = fit_curve(conc, y, "dose_response_4pl", kind="IC50")
+    assert res.parameter("LogIC50").unit_note == "log10 of IC50 (the parameter actually fitted)."
+    assert "EC50" not in json.dumps(res.extra["parameter_descriptions"])
+    assert all("EC50" not in (p.unit_note or "") and "EC50" not in p.name for p in res.parameters)
+    assert "log10(IC50)" in res.why_chosen and "EC50" not in res.why_chosen
+    assert "IC50" in res.extra["equation"] and "EC50" not in res.extra["equation"]
+    ec = fit_curve(conc, y, "dose_response_4pl")
+    assert ec.parameter("LogEC50").unit_note == "log10 of EC50 (the parameter actually fitted)."
+    assert ec.parameter("LogEC50").value == pytest.approx(res.parameter("LogIC50").value, rel=1e-12)
+
+
+def test_compare_curve_parameter_has_its_own_model_tooltip():
+    from torusplot.stats import registry
+
+    shared = next(p for p in registry.get_analysis("compare_curve_parameter").params if p.name == "model")
+    single = next(p for p in registry.get_analysis("nonlinear_regression").params if p.name == "model")
+    assert "user_defined" not in shared.choices and "user_defined" not in shared.help
+    assert "cannot be used in this analysis" in shared.help
+    assert "user_defined" in single.choices and "Choose 'user_defined'" in single.help
+
+
+_NL_X = np.array([0.5, 1, 2, 4, 8, 16, 32, 64.0] * 3)
+_NL_Y = 100 * _NL_X / (5 + _NL_X) + np.random.default_rng(3).normal(0, 3, _NL_X.size)
+_NL_XG = np.linspace(-3, 3, 13).repeat(2) + 5
+_NL_YG = 50 * np.exp(-0.5 * ((_NL_XG - 5.3) / 0.9) ** 2) + np.random.default_rng(4).normal(0, 2, _NL_XG.size)
+# parameter -> (power of the X unit, power of the Y unit)
+_NL_UNITS = {
+    "michaelis_menten": (_NL_X, _NL_Y, {"Vmax": (0, 1), "Km": (1, 0)}),
+    "gaussian": (_NL_XG, _NL_YG, {"Amplitude": (0, 1), "Mean": (1, 0), "SD": (1, 0)}),  # SD is bounded at 0
+    "one_phase_decay": (_NL_X, 100 - _NL_Y, {"Y0": (0, 1), "Plateau": (0, 1), "K": (-1, 0)}),
+    "dose_response_4pl": (_NL_X, 100 - _NL_Y, {"Bottom": (0, 1), "Top": (0, 1), "HillSlope": (0, 0)}),
+}
+
+
+@pytest.mark.parametrize("model", list(_NL_UNITS))
+@pytest.mark.parametrize("sx, sy", [(1e-9, 1.0), (1.0, 1e-12), (1e-9, 1e-12), (1e6, 1e9), (1.0, 1e120)])
+def test_curve_fits_do_not_depend_on_the_units_of_x_and_y(model, sx, sy):
+    """Fit, goodness of fit, tests and profile-likelihood limits are the same in any unit;
+    parameters simply carry the unit. (The optimiser works on rescaled residuals: its absolute
+    gradient threshold used to stop bounded fits at the starting values for small Y units.)"""
+    x, y, units = _NL_UNITS[model]
+    base = fit_curve(x, y, model, ci_method="profile")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        res = fit_curve(x * sx, y * sy, model, ci_method="profile")
+    gb, gr = base.extra["goodness_of_fit"], res.extra["goodness_of_fit"]
+    assert gr["r_squared"] == pytest.approx(gb["r_squared"], rel=1e-8)
+    assert gr["sy_x"] == pytest.approx(gb["sy_x"] * sy, rel=1e-6)
+    assert res.extra["convergence"]["converged"] and base.extra["convergence"]["converged"]
+    assert res.extra["runs_test"]["p_value"] == pytest.approx(base.extra["runs_test"]["p_value"], rel=1e-9)
+    for check, ref in zip(res.assumptions, base.assumptions):
+        assert check.name == ref.name and check.status == ref.status
+        assert (check.p_value is None) == (ref.p_value is None)
+        if ref.p_value is not None:
+            assert check.p_value == pytest.approx(ref.p_value, rel=1e-5), check.name
+    for name, (px, py) in units.items():
+        factor = sx**px * sy**py
+        new, old = res.parameter(name), base.parameter(name)
+        for attr in ("value", "se", "ci_low", "ci_high"):
+            assert getattr(new, attr) == pytest.approx(getattr(old, attr) * factor, rel=2e-5), (name, attr)
+    assert_strict_json(res)
+
+
+@pytest.mark.parametrize("sx, sy", [(1e-9, 1e-12), (1e6, 1e9)])
+def test_fit_comparisons_do_not_depend_on_the_units(sx, sy):
+    x, y, _ = _NL_UNITS["dose_response_4pl"]
+    base = compare_fits(x, y, "dose_response_3pl", "dose_response_4pl")
+    res = compare_fits(x * sx, y * sy, "dose_response_3pl", "dose_response_4pl")
+    assert res.statistic == pytest.approx(base.statistic, rel=1e-5)
+    assert res.p_value == pytest.approx(base.p_value, rel=1e-5)
+    assert res.extra["akaike"]["delta_aicc"] == pytest.approx(base.extra["akaike"]["delta_aicc"], rel=1e-5)
+    data = {"a": (x, y), "b": (x * 1.7, y)}
+    scaled = {k: (xx * sx, yy * sy) for k, (xx, yy) in data.items()}
+    base_d = compare_datasets(data, "dose_response_4pl")
+    res_d = compare_datasets(scaled, "dose_response_4pl")
+    assert res_d.statistic == pytest.approx(base_d.statistic, rel=1e-4)
+    assert res_d.p_value == pytest.approx(base_d.p_value, rel=1e-4)
+
+
+def test_a_large_offset_in_y_is_not_mistaken_for_a_perfect_fit():
+    """'Exact fit' is judged against the centred total sum of squares and the rounding level,
+    not against sum(y^2): with Y = 1e11 + signal the residual scatter is still real."""
+    x = np.arange(1.0, 21.0)
+    rng = np.random.default_rng(6)
+    noise = np.round(rng.normal(0, 1, 20) * 64) / 64
+    y = 3.0 * x + noise
+    base = fit_curve(x, y, "linear")
+    res = fit_curve(x, y + 1e11, "linear")
+    assert not res.extra["goodness_of_fit"]["perfect_fit"]
+    assert res.parameter("Slope").value == pytest.approx(base.parameter("Slope").value, rel=1e-6)
+    assert res.parameter("Slope").se == pytest.approx(base.parameter("Slope").se, rel=1e-4)
+    line = linear_regression(x, y + 1e11)
+    assert line.parameter("Slope").se == pytest.approx(linear_regression(x, y).parameter("Slope").se, rel=1e-6)
+    assert not any("perfect" in w for w in line.warnings)
+    # exact data are still recognised as an exact fit, with or without the offset
+    for offset in (0.0, 1e11):
+        exact = linear_regression(x, 3.0 * x + 1.0 + offset)
+        assert any("perfect fit" in w for w in exact.warnings) and exact.parameter("Slope").se == 0.0
+        assert fit_curve(x, 3.0 * x + 1.0 + offset, "linear").extra["goodness_of_fit"]["perfect_fit"]

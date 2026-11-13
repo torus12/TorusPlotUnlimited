@@ -642,3 +642,142 @@ def test_property_hazard_ratio(a, b):
             assert 0 <= est["ci_low"] <= est["hr"] <= est["ci_high"]
             if rev[key]["hr"] is not None and est["hr"] > 0:
                 assert rev[key]["hr"] == pytest.approx(1.0 / est["hr"], rel=1e-8)
+
+
+# =============================================================================
+# Audit part 2 (B8): median confidence limits when the curve reaches 0
+# =============================================================================
+def test_median_ci_of_a_single_subject_is_open_ended():
+    km = sv.kaplan_meier([5.0], [1])
+    assert km["median"] == 5.0 and km["median_ci_low"] == 5.0
+    assert km["median_ci_high"] is None  # not the zero-width interval [5, 5]
+    assert "not reached" in km["median_note"] and "undefined" in km["median_note"]
+    res = sv.survival_analysis([5.0], [1])
+    assert "95% CI 5 to not reached" in res.interpretation
+    json.loads(res.finalize().model_dump_json())
+
+
+def test_upper_limit_is_not_reached_when_the_upper_band_never_drops_to_one_half():
+    """Three uncensored subjects: the log-log upper band is 0.945 and 0.774, then undefined at
+    S = 0. By Brookmeyer & Crowley's definition the upper limit is the first time the upper
+    band is at or below 50%, so it is not reached. [min, max] of three observations would
+    cover the true median with probability 1 - 2 * (1/2)^3 = 0.75, not 0.95."""
+    km = sv.kaplan_meier([1, 2, 3], [1, 1, 1])
+    upper = [row["ci_high"] for row in km["table"]]
+    z = stats.norm.ppf(0.975)
+    for s_hat, gw, got in ((2 / 3, 1 / 6, upper[0]), (1 / 3, 1 / 6 + 1 / 2, upper[1])):
+        assert got == pytest.approx(s_hat ** math.exp(-z * math.sqrt(gw) / abs(math.log(s_hat))), rel=1e-12)
+    assert upper[2] is None
+    assert (km["median"], km["median_ci_low"], km["median_ci_high"]) == (2.0, 1.0, None)
+    # the same with the linear (Greenwood) band, and when all subjects fail at one time
+    assert sv.kaplan_meier([1, 2, 3], [1, 1, 1], ci_method="linear")["median_ci_high"] is None
+    tied = sv.kaplan_meier([2, 2, 2, 2], [1, 1, 1, 1])
+    assert (tied["median"], tied["median_ci_low"], tied["median_ci_high"]) == (2.0, 2.0, None)
+    # with more subjects the band does come down to 50% before the curve ends: a finite limit
+    many = sv.kaplan_meier(list(range(1, 13)), [1] * 12)
+    assert (many["median"], many["median_ci_low"], many["median_ci_high"]) == (6.0, 2.0, 10.0)
+
+
+@pytest.mark.parametrize("data", [
+    ([1, 2, 3], [1, 1, 1]), ([5.0], [1]), ([1, 2, 3, 4, 5, 6], [1, 1, 0, 1, 1, 1]),
+    (list(range(1, 13)), [1] * 12), (list(range(1, 10)), [1, 1, 0, 1, 1, 1, 0, 1, 1]),
+    _random_groups(4, n=40)["g1"], _random_groups(9, n=12, censor=0.1)["g2"],
+])
+def test_median_interval_against_lifelines_where_both_define_it(data):
+    """Cross-check of the Brookmeyer-Crowley limits against lifelines, restricted to the cases
+    in which both programs define the limit. They differ on purpose in exactly one situation:
+    lifelines sets the confidence band to 0 once the curve has reached 0 and therefore reports
+    the time of the last event as the upper limit; here the band is undefined at S = 0 and the
+    limit is "not reached" (None) unless the band itself came down to 50% earlier."""
+    t, e = data
+    km = sv.kaplan_meier(t, e)
+    kmf = KaplanMeierFitter().fit(t, e)
+    lo_ll, hi_ll = median_survival_times(kmf.confidence_interval_).iloc[0]
+    lo_ll, hi_ll = (None if math.isinf(v) else float(v) for v in (lo_ll, hi_ll))
+    assert km["median_ci_low"] == (None if lo_ll is None else pytest.approx(lo_ll))  # lower limits always agree
+    table = km["table"]
+    band_reaches_half = any(r["ci_high"] is not None and r["ci_high"] <= 0.5 for r in table)
+    if band_reaches_half:
+        assert km["median_ci_high"] == pytest.approx(hi_ll)
+    else:
+        assert km["median_ci_high"] is None
+        if hi_ll is not None:  # lifelines: the time at which the curve reaches 0
+            assert table[-1]["survival"] == 0.0 and hi_ll == table[-1]["time"]
+
+
+# =============================================================================
+# Review item c: the log-rank trend test is reachable from the registered analysis
+# =============================================================================
+def _dose_table(labels=("0", "10", "100"), order=None, seed=5, n=20):
+    rng = np.random.default_rng(seed)
+    rows = []
+    for i, lab in enumerate(labels):
+        t = np.round(rng.exponential(6 + 6 * i, n) + 0.5, 1)
+        e = (rng.random(n) > 0.2).astype(int)
+        rows += [(tt, ee, lab) for tt, ee in zip(t, e)]
+    df = pd.DataFrame(rows, columns=["Time", "Event", "Dose"])
+    if order is not None:
+        df = pd.concat([df[df["Dose"] == lab] for lab in order], ignore_index=True)
+    return df
+
+
+def test_trend_option_of_the_registered_analysis():
+    spec = registry.get_analysis("survival")
+    param = next(p for p in spec.params if p.name == "trend")
+    assert param.kind == "bool" and param.default is False
+    assert "ORDER" in param.help and "doses" in param.help
+    df = _dose_table()
+    table = MultipleVariablesTable("s", df)
+    plain = run_analysis(table, "survival")
+    assert "trend" not in plain.extra and "trend" not in plain.interpretation
+    res = run_analysis(table, "survival", trend=True)
+    groups = {lab: (df.loc[df.Dose == lab, "Time"], df.loc[df.Dose == lab, "Event"]) for lab in ("0", "10", "100")}
+    ref = sv.logrank_test(groups, trend=True)["trend"]
+    tr = res.extra["trend"]
+    assert tr["statistic"] == pytest.approx(ref["statistic"], rel=1e-12)
+    assert tr["p_value"] == pytest.approx(ref["p_value"], rel=1e-12)
+    assert tr["group_order"] == ["0", "10", "100"] and tr["scores"] == [1.0, 2.0, 3.0] and tr["df"] == 1
+    assert "trend across the ordered groups (0 < 10 < 100)" in res.interpretation
+    assert "trend" in res.methods_text and any("Tarone" in c for c in res.citations)
+    assert any(a.name.startswith("Ordered groups") for a in res.assumptions)
+    assert res.params["trend"] is True
+    # the headline test is unchanged by asking for the trend test
+    assert res.statistic == pytest.approx(plain.statistic, rel=1e-12)
+    json.loads(res.model_dump_json())
+
+
+def test_trend_orders_numeric_group_labels_by_value_and_text_labels_by_appearance():
+    shuffled = _dose_table(order=["100", "0", "10"])
+    res = run_analysis(MultipleVariablesTable("s", shuffled), "survival", trend=True)
+    base = run_analysis(MultipleVariablesTable("s", _dose_table()), "survival", trend=True)
+    assert res.extra["trend"]["group_order"] == ["0", "10", "100"]
+    assert "ascending numeric order" in res.extra["trend"]["order_basis"]
+    assert res.extra["trend"]["statistic"] == pytest.approx(base.extra["trend"]["statistic"], rel=1e-10)
+    text = _dose_table(labels=("low", "mid", "high"))
+    named = run_analysis(MultipleVariablesTable("s", text), "survival", trend=True)
+    assert named.extra["trend"]["group_order"] == ["low", "mid", "high"]
+    assert "first appear" in named.extra["trend"]["order_basis"]
+    # an explicit order wins (array-level API)
+    forced = sv.survival_analysis(text["Time"], text["Event"], text["Dose"], trend=True,
+                                  group_order=["high", "mid", "low"])
+    assert forced.extra["trend"]["group_order"] == ["high", "mid", "low"]
+    assert forced.extra["trend"]["z"] == pytest.approx(-named.extra["trend"]["z"], rel=1e-10)
+
+
+def test_trend_with_two_groups_is_explained_not_reported():
+    df = _dose_table(labels=("0", "10"))
+    res = run_analysis(MultipleVariablesTable("s", df), "survival", trend=True)
+    assert "trend" not in res.extra
+    assert any("three or more ordered groups" in n for n in res.data_notes)
+
+
+@pytest.mark.parametrize("scale", [1e-9, 1e6])
+def test_survival_tests_do_not_depend_on_the_unit_of_time(scale):
+    df = _dose_table()
+    base = sv.survival_analysis(df["Time"], df["Event"], df["Dose"], trend=True)
+    res = sv.survival_analysis(df["Time"] * scale, df["Event"], df["Dose"], trend=True)
+    assert res.statistic == pytest.approx(base.statistic, rel=1e-12)
+    assert res.extra["trend"]["statistic"] == pytest.approx(base.extra["trend"]["statistic"], rel=1e-12)
+    assert [c.p_value for c in res.comparisons] == pytest.approx([c.p_value for c in base.comparisons], rel=1e-12)
+    for d_new, d_old in zip(res.descriptives, base.descriptives):
+        assert d_new["median"] == pytest.approx(d_old["median"] * scale, rel=1e-12)

@@ -12,7 +12,7 @@ User text is **never executed**. It is turned into a syntax tree with :func:`ast
 (parsing only, no code object is ever run) and that tree is translated, node by node, into
 a tiny private expression format that can hold nothing except
 
-* numeric literals,
+* numeric literals and the constant ``pi``,
 * the independent variable ``X``,
 * parameter names,
 * ``+ - * / **`` and unary ``+ -``,
@@ -22,6 +22,18 @@ Everything else (attribute access, subscripts, lambdas, comprehensions, strings,
 comparisons, names starting with an underscore, ...) is rejected with a
 :class:`~torusplot.stats._utils.StatsError`. Evaluation walks the private format with numpy;
 there is no ``eval``, ``exec`` or ``compile`` of user text anywhere.
+
+Names
+-----
+``X`` / ``x`` is the independent variable and ``pi`` (any capitalisation) is the constant
+3.14159... Every other name is a **parameter to fit**. That deliberately includes a lone
+``e`` (and ``E``): people who want the exponential function write ``exp(X)``, whereas a bare
+``e`` almost always is the fifth coefficient of ``a + b*x + c*x^2 + d*x^3 + e*x^4``. Reading
+it as Euler's number would silently freeze that coefficient at 2.718 and fit the wrong
+model. Euler's number is available as ``exp(1)``. Numbers in scientific notation such as
+``1e3`` or ``2.5E-4`` are ordinary numeric literals and are not affected. Whenever ``e`` is
+fitted as a parameter, or ``pi`` is read as the constant, :attr:`Equation.notes` says so and
+the fitting functions pass that note on to the user.
 """
 
 from __future__ import annotations
@@ -76,8 +88,15 @@ FUNCTIONS: dict[str, int | None] = {
     "max": None,
 }
 
-#: Named constants. ``e`` is only recognised in lower case so ``E`` can be a parameter.
-CONSTANTS: dict[str, float] = {"pi": math.pi, "e": math.e}
+#: Named constants (matched without regard to case). A bare ``e`` is NOT a constant: it is a
+#: parameter name like any other (write ``exp(1)`` for Euler's number); see the module docstring.
+CONSTANTS: dict[str, float] = {"pi": math.pi}
+
+_NOTE_E = (
+    "'{name}' in the equation was fitted as a parameter, not read as Euler's number "
+    "(2.718...). If you meant the constant, write exp(1), or exp(X) for an exponential."
+)
+_NOTE_PI = "'{name}' in the equation was read as the constant 3.14159..., not as a parameter to fit."
 
 _LHS = re.compile(r"^\s*(?:y|f\s*\(\s*x\s*\))\s*=(?!=)", re.IGNORECASE)
 _REPLACEMENTS = {
@@ -128,15 +147,20 @@ class Equation:
         Parameter names in order of first appearance (left to right).
     uses_x:
         ``False`` when ``X`` does not appear on the right-hand side.
+    notes:
+        Plain-English remarks about how names were read that a user could otherwise get
+        wrong: a lone ``e`` is a parameter (not Euler's number), ``pi`` is the constant.
     """
 
-    __slots__ = ("_tree", "expression", "parameters", "text", "uses_x")
+    __slots__ = ("_tree", "expression", "notes", "parameters", "text", "uses_x")
 
-    def __init__(self, expression: str, tree: tuple, parameters: list[str], uses_x: bool) -> None:
+    def __init__(self, expression: str, tree: tuple, parameters: list[str], uses_x: bool,
+                 notes: Sequence[str] = ()) -> None:
         self.expression = expression
         self.text = f"Y = {expression}"
         self.parameters = list(parameters)
         self.uses_x = uses_x
+        self.notes = list(notes)
         self._tree = tree
 
     def __repr__(self) -> str:
@@ -197,8 +221,11 @@ def parse_equation(text: str) -> Equation:
     Accepted syntax: numbers, ``X`` (or ``x``) as the independent variable, parameter
     names, ``+ - * /``, ``^`` or ``**`` for powers, round brackets, the functions
     ``exp, log (natural), ln, log10, log2, sqrt, abs, sin, cos, tan, tanh, sinh, cosh,
-    atan, min, max, pow`` and the constants ``pi`` and ``e``. An optional leading ``Y =``
-    is ignored.
+    atan, min, max, pow`` and the constant ``pi``. An optional leading ``Y =`` is ignored.
+
+    Every other name is a parameter to fit, **including a lone** ``e``: Euler's number is
+    written ``exp(1)`` (and the exponential function ``exp(X)``). The returned equation's
+    ``notes`` say so whenever ``e`` is used as a parameter or ``pi`` as the constant.
 
     Raises
     ------
@@ -229,7 +256,7 @@ def parse_equation(text: str) -> Equation:
             "sqrt(). Write multiplication explicitly (2*X, not 2X)."
         ) from None
     names: list[str] = []
-    state = {"uses_x": False}
+    state: dict[str, Any] = {"uses_x": False, "notes": []}
     try:
         tree = _convert(parsed.body, names, state, 0)
     except RecursionError:  # pragma: no cover - depth is limited inside _convert
@@ -238,7 +265,7 @@ def parse_equation(text: str) -> Equation:
         raise StatsError(
             f"The equation has {len(names)} parameters; at most {MAX_PARAMETERS} are supported."
         )
-    return Equation(expression, tree, names, state["uses_x"])
+    return Equation(expression, tree, names, state["uses_x"], state["notes"])
 
 
 def _syntax_hint(exc: BaseException) -> str:
@@ -248,7 +275,7 @@ def _syntax_hint(exc: BaseException) -> str:
     return type(exc).__name__
 
 
-def _convert(node: ast.AST, names: list[str], state: dict[str, bool], depth: int) -> tuple:
+def _convert(node: ast.AST, names: list[str], state: dict[str, Any], depth: int) -> tuple:
     """Translate one ``ast`` node into the private whitelisted tuple format."""
     if depth > MAX_DEPTH:
         raise StatsError("The equation is nested too deeply; please simplify it.")
@@ -286,7 +313,13 @@ def _convert(node: ast.AST, names: list[str], state: dict[str, bool], depth: int
     raise StatsError(f"Equations cannot contain {hint}.")
 
 
-def _convert_name(name: str, names: list[str], state: dict[str, bool]) -> tuple:
+def _remark(state: dict[str, Any], text: str) -> None:
+    notes = state.setdefault("notes", [])
+    if text not in notes:
+        notes.append(text)
+
+
+def _convert_name(name: str, names: list[str], state: dict[str, Any]) -> tuple:
     if name.startswith("_") or "__" in name:
         raise StatsError(
             f"'{name}' is not a valid parameter name: names may not start with an underscore "
@@ -297,8 +330,11 @@ def _convert_name(name: str, names: list[str], state: dict[str, bool]) -> tuple:
         return ("x",)
     if name in ("y", "Y"):
         raise StatsError("Y may only appear on the left of the '=' sign, not inside the equation.")
-    if name == "e" or name.lower() == "pi":
+    if name.lower() in CONSTANTS:
+        _remark(state, _NOTE_PI.format(name=name))
         return ("num", np.float64(CONSTANTS[name.lower()]))
+    if name == "e":  # a parameter like any other, but say so: some users expect 2.718...
+        _remark(state, _NOTE_E.format(name=name))
     if name.lower() in FUNCTIONS:
         raise StatsError(
             f"'{name}' is a function: write it with brackets, e.g. {name.lower()}(X). "
@@ -309,7 +345,7 @@ def _convert_name(name: str, names: list[str], state: dict[str, bool]) -> tuple:
     return ("par", names.index(name))
 
 
-def _convert_call(node: ast.Call, names: list[str], state: dict[str, bool], depth: int) -> tuple:
+def _convert_call(node: ast.Call, names: list[str], state: dict[str, Any], depth: int) -> tuple:
     if not isinstance(node.func, ast.Name):
         raise StatsError(
             "Only the built-in mathematical functions can be called in an equation "

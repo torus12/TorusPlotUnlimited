@@ -608,3 +608,123 @@ def test_property_mixed_model_never_breaks_the_analysis(df):
     assert mm["p_value"] is None or 0.0 <= mm["p_value"] <= 1.0
     assert isinstance(mm["note"], str) and mm["note"]
     json.loads(res.model_dump_json())
+
+
+# =============================================================================
+# Audit part 2: unit of measurement, replicate counts in the text (D2)
+# =============================================================================
+def _nested_unit_free(res):
+    return {
+        "stat": res.statistic, "p": res.p_value, "df": res.df, "df2": res.df2,
+        "effects": [(e.value, e.ci_low, e.ci_high) for e in res.effect_sizes],
+        "assumption_p": [a.p_value for a in res.assumptions],
+        "comp": [(c.statistic, c.p_value, c.p_adjusted, c.effect_size.value if c.effect_size else None)
+                 for c in res.comparisons],
+        "table": [(r["f"], r["p"]) for r in res.anova_table],
+        "mixed": res.extra.get("mixed_model", {}).get("statistic"),
+    }
+
+
+def _nested_in_units(res, scale):
+    return {
+        "desc": [(d["mean"] / scale, d["sd"] / scale, d["sem"] / scale, d["ci_low"] / scale, d["ci_high"] / scale)
+                 for d in res.descriptives],
+        "params": [(p.value / scale, None if p.se is None else p.se / scale, p.ci_low / scale, p.ci_high / scale)
+                   for p in res.parameters],
+        "comp": [(c.estimate / scale, c.se / scale, c.ci_low / scale, c.ci_high / scale) for c in res.comparisons],
+        "ss": [r["ss"] / scale / scale for r in res.anova_table],
+        "reps": [(r["mean"] / scale, r["value"] / scale, r["sd_technical"] / scale)
+                 for r in res.extra["replicate_means"]],
+    }
+
+
+def _deep_same(a, b, rel=1e-8, path=""):
+    if isinstance(a, dict):
+        assert set(a) == set(b), path
+        for key in a:
+            _deep_same(a[key], b[key], rel, f"{path}/{key}")
+    elif isinstance(a, list | tuple):
+        assert len(a) == len(b), path
+        for i, (u, v) in enumerate(zip(a, b)):
+            _deep_same(u, v, rel, f"{path}[{i}]")
+    elif a is None or b is None:
+        assert a is None and b is None, f"{path}: {a!r} vs {b!r}"
+    else:
+        assert a == pytest.approx(b, rel=rel, abs=1e-10), f"{path}: {a!r} vs {b!r}"
+
+
+@pytest.mark.parametrize("scale", [1e-13, 1.0, 1e9, 1e150])
+@pytest.mark.parametrize("design", ["paired_t", "welch", "t", "rm_anova", "anova"])
+def test_nested_analysis_does_not_depend_on_the_unit_of_measurement(scale, design):
+    three = design in {"rm_anova", "anova"}
+    kwargs = {"groups": ("Control", "Low", "High"), "shifts": (0.0, 0.5, 1.2)} if three else {}
+    kwargs["distinct_reps"] = design in {"welch", "t", "anova"}
+    df = _make(5, cells=6, **kwargs)
+    scaled = df.assign(intensity=df["intensity"] * scale)
+    base = _run(df, test=design)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        res = _run(scaled, test=design)
+    assert res.statistic is not None and res.test_name == base.test_name
+    _deep_same(_nested_unit_free(res), _nested_unit_free(base))
+    _deep_same(_nested_in_units(res, scale), _nested_in_units(base, 1.0))
+    json.loads(res.model_dump_json())
+
+
+@pytest.mark.parametrize("scale", [1e-12, 1e9])
+def test_mixed_model_cross_check_is_fitted_on_rescaled_values(scale):
+    df = _make(2, cells=8)
+    base = ns.nested_analysis(df, "intensity", "condition", "experiment")
+    res = ns.nested_analysis(df.assign(intensity=df["intensity"] * scale), "intensity", "condition", "experiment")
+    assert res.extra["mixed_model"]["converged"] == base.extra["mixed_model"]["converged"]
+    assert res.extra["mixed_model"]["statistic"] == pytest.approx(base.extra["mixed_model"]["statistic"], rel=1e-6)
+    assert res.p_value == pytest.approx(base.p_value, rel=1e-9)
+
+
+@pytest.mark.parametrize("scale", [1e-13, 1.0, 1e9])
+def test_constant_paired_differences_are_recognised_at_every_scale(scale):
+    """Drug = Control + 0.1 in every experiment: the differences 10.1 - 10.0, 20.2 - 20.1, ...
+    are equal only up to the rounding of the two columns (far more than an ulp of 0.1)."""
+    rows = []
+    for i, base in enumerate([10.0, 20.1, 30.3, 40.7]):
+        rows += [("Control", f"exp{i}", base * scale), ("Drug", f"exp{i}", (base + 0.1) * scale)]
+    df = pd.DataFrame(rows, columns=["condition", "experiment", "intensity"])
+    res = _run(df, paired=True)
+    assert res.statistic is None and res.p_value is None
+    assert any("no variability" in w for w in res.warnings)
+    check = next(a for a in res.assumptions if a.name.startswith("Normality"))
+    assert check.p_value is None and "identical" in check.detail
+
+
+def test_paired_summary_counts_only_the_replicates_that_entered_the_test():
+    rng = np.random.default_rng(8)
+    rows = []
+    for gi, g in enumerate(["ctl", "drug"]):
+        for r in range(4):
+            if g == "drug" and r == 3:
+                continue
+            base = rng.normal() + 1.5 * gi
+            rows += [(g, f"exp{r + 1}", base + rng.normal(0, 0.5)) for _ in range(5)]
+    df = pd.DataFrame(rows, columns=["condition", "experiment", "intensity"])
+    res = _run(df, paired=True)
+    assert res.n == {"ctl": 3, "drug": 3} and res.df == 2
+    assert "the 6 biological replicate means were compared between ctl (n = 3), drug (n = 3)" in res.interpretation
+    assert any("reduced to 7 biological replicate means" in n and "the test used 6 of them" in n
+               for n in res.data_notes)
+    assert any("exp4" in w and "left out" in w for w in res.warnings)
+    # all seven replicate means are still listed for the SuperPlot
+    assert len(res.extra["replicate_means"]) == 7
+    # nothing left out: the count is simply the total
+    full = _run(_make(3, cells=4))
+    assert "the 8 biological replicate means were compared" in full.interpretation
+    assert any(n.endswith("the test used the replicate means.") for n in full.data_notes)
+
+
+def test_median_summary_is_not_described_as_averaging():
+    res = _run(_make(14, cells=(4, 6)), summary="median")
+    assert res.interpretation.startswith(
+        "Technical replicates were summarised by their median within each biological replicate")
+    assert "averaged" not in res.interpretation
+    assert "averaged" not in next(a for a in res.assumptions if a.name.startswith("Independent")).detail
+    mean = _run(_make(14, cells=(4, 6)))
+    assert mean.interpretation.startswith("Technical replicates were averaged within each biological replicate")

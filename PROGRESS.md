@@ -2,18 +2,18 @@
 
 Last updated: 2026-11-13. Remote: https://github.com/torus12/TorusPlotUnlimited (branch `main`).
 
-| Milestone | Scope | Status | Notes |
-|---|---|---|---|
-| M0 | Scaffold, proprietary LICENSE, license gate, CI, reference notes | done, pushed | License gate: 76 runtime packages, all permissive |
-| M1 | Data layer: 5 table types, paste/import, reshape, `.tplot` | done, pushed | |
-| M2 | Statistics engine + validation suite | code complete, integrating | 36 registered analyses + power; NIST + published + cross-checks |
-| M3 | FigureSpec + renderer + brackets | done, pushed | 18 plot types |
-| M4 | Styles, palettes, fonts, composer, exports, reports | done, pushed | 7 presets; SVG/PDF/TIFF/PNG; report + methods |
-| M5 | Streamlit UI + launchers | built, tests pass locally | waits on M2 commit |
-| M6 | AI layer | in progress | |
-| M7 | MCP server | in progress | |
-| M8 | Documentation | in progress | |
-| M9 | Final audit + FINAL_REPORT.md | pending | |
+| Milestone | Scope | Status |
+|---|---|---|
+| M0 | Scaffold, proprietary LICENSE, license gate, CI, reference notes | done |
+| M1 | Data layer: 5 table types, paste/import, reshape, `.tplot` | done |
+| M2 | Statistics engine (36 analyses + power) + validation suite | done |
+| M3 | FigureSpec + renderer (18 plot types) + brackets | done |
+| M4 | Styles, palettes, fonts, composer, exports, reports | done |
+| M5 | Streamlit UI + launchers + CLI | done |
+| M6 | AI layer | done (tested offline; no real provider reachable from the build sandbox) |
+| M7 | MCP server | done (optional extra) |
+| M8 | Documentation | done |
+| M9 | Final audit + FINAL_REPORT.md | done |
 
-CI (GitHub Actions, windows-latest + ubuntu-latest, Python 3.11 + 3.12): green on the latest
-pushed commit (tests + ruff + license check).
+Final verification: 2,069 tests pass in a fresh environment built from the lock file;
+ruff clean; license gate and lock check pass; all app pages load headless. See FINAL_REPORT.md.

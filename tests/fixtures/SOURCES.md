@@ -53,8 +53,8 @@ All test files are in `tests/stats/`.
 | Dunnett critical values | Dunnett CW (1955) A multiple comparison procedure for comparing several treatments with a control. J Am Stat Assoc 50:1096-1121; Dunnett CW (1964) New tables for multiple comparisons with a control. Biometrics 20:482-491. | Published worked example (table) | 5% points for 1 to 4 treatments against a control, df 10, 20 and infinity (20 values, to 2 decimals). | `test_posthoc.py` |
 | Studentized range 5% points | Harter HL (1960) Tables of range and studentized range. Ann Math Stat 31:1122-1147. | Published worked example (table) | q(3, 30), q(3, 10), q(5, 20), q(4, 20), q(2, 10). | `test_posthoc.py` |
 | Battery life, 3 x 3 factorial, n = 4 | Montgomery DC. Design and Analysis of Experiments. Wiley, chapter 5 (Example 5.1). | Published worked example | Two-way ANOVA: sums of squares, df, MS error, F = 7.91, 28.97, 3.56. | `test_factorial.py` |
-| Tooth growth in guinea pigs, 2 x 3 factorial, n = 10 | Crampton EW (1947) The growth of the odontoblasts of the incisor tooth as a criterion of the vitamin C intake of the guinea pig. J Nutr 33:491-504. Also analysed in Bliss CI (1952) The Statistics of Bioassay. Academic Press. | Published worked example | Two-way ANOVA: F = 15.572, 92.000, 4.107; sums of squares; interaction P = 0.02186. | `test_factorial.py` |
-| Eight subjects, four conditions (repeated measures) | Field A. Discovering Statistics Using IBM SPSS Statistics. SAGE, chapter on repeated-measures designs. | Published worked example | F(3, 21) = 3.79; Mauchly W = 0.136, P = 0.047; Greenhouse-Geisser epsilon 0.533; Huynh-Feldt epsilon 0.666. | `test_repeated.py` |
+| Constructed balanced 2 x 3 factorial, n = 10 (replaced a 1947 tooth-growth dataset; see DECISIONS.md D-030) | Constructed for TorusPlot; exact sums of squares from the definitions | Constructed / first principles | Two-way ANOVA sums of squares, F and P | `test_factorial.py` |
+| Constructed 8 subjects x 4 conditions (replaced a textbook teaching example; see DECISIONS.md D-030) | Constructed for TorusPlot | Constructed / first principles + statsmodels `AnovaRM` | F, Mauchly W and chi-square, Greenhouse-Geisser and Huynh-Feldt epsilons and corrected P | `test_repeated.py` |
 | Puromycin, treated enzyme (12 points) | Treloar MA (1974) Effects of Puromycin on Galactosyltransferase in Golgi Membranes. MSc thesis, Univ. of Toronto; analysed in Bates DM, Watts DG (1988) Nonlinear Regression Analysis and Its Applications. Wiley, Appendix A1.3. | Published worked example | Michaelis-Menten fit: Vmax = 212.68 (SE 6.947), Km = 0.06412 (SE 0.008281), residual SE 10.93. | `test_nonlinear.py` |
 | BOD (6 points) | Marske DM (1967) MSc thesis, Univ. of Wisconsin; in Bates DM, Watts DG (1988), Appendix A1.4. | Published worked example | Two-parameter exponential fit: 19.143, 0.5311; residual SS 25.99. | `test_nonlinear.py` |
 | Anscombe's quartet | Anscombe FJ (1973) Graphs in statistical analysis. Am Stat 27:17-21. | Published worked example | Line y = 3 + 0.5x, sums of squares, SE of slope 0.118, R squared 0.667, r = 0.816, for all four sets (to the precision of the paper). | `test_regression.py`, `test_correlation.py` |
@@ -127,7 +127,7 @@ These points are stated plainly so that an owner can decide what to re-verify.
    This applies to: the Shapiro-Wilk example, the sleep data, the NIST handbook Grubbs example, the
    critical-value tables (rank tests, Grubbs, Dunnett, studentized range, Anderson-Darling, Cohen's
    power tables), the plant growth, mucociliary, rounding-first-base, ozone and warp-breaks data,
-   the battery-life and tooth-growth experiments, the repeated-measures example, the puromycin and
+   the battery-life experiment, the puromycin and
    BOD data, Anscombe's quartet, the leukaemia trial, and the five contingency-table examples.
 5. **Page, table and example numbers of these sources were not verified** (for example the chapter
    and example number of the battery-life experiment, the edition and chapter of the
@@ -139,12 +139,13 @@ These points are stated plainly so that an owner can decide what to re-verify.
    data. The additional Tukey, Welch and Kruskal-Wallis results for the plant growth data are R
    output recalled from memory and are counted as cross-implementation evidence only.
 7. **Some of these classic datasets are also redistributed with other statistics software.** The
-   sleep, plant growth, ozone, warp-breaks, tooth-growth, puromycin and BOD data are distributed with
+   sleep, plant growth, ozone, warp-breaks, puromycin and BOD data are distributed with
    the R `datasets` package, which is under a copyleft licence. The numbers themselves are facts from
    the primary literature and were typed in, not copied from a file. If the project prefers to avoid
-   any doubt, the tooth-growth test can be deleted without losing coverage (the battery-life example
-   covers the same analysis); [sources/factorial_repeated.md](sources/factorial_repeated.md) names
-   the test and the constant.
+   any doubt, any of these tests can be deleted without losing coverage of the method (each is
+   also cross-checked against independent implementations). The two examples judged most
+   sensitive by the licensing audit (a tooth-growth dataset and a textbook repeated-measures
+   teaching example) were already replaced by constructed data (DECISIONS.md D-030).
 8. **ROUT was implemented from a description of the method, not from the paper text.** No number
    from Motulsky and Brown (2006) is asserted. An equation-by-equation comparison with the paper
    (scale of the merit function, percentile interpolation) is still open.

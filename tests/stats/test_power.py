@@ -309,7 +309,29 @@ def test_power_curve_ttest():
     paired = pw.power_curve(effect_size=0.5, design="paired", n_max=40, target_power=0.9, alternative="greater")
     assert paired.extra["curve"]["x"] == [float(v) for v in range(2, 41)]
     assert paired.extra["curve"]["y"][-1] == pytest.approx(_t_power_ref(0.5, 40, alternative="greater", design="paired"))
-    assert paired.extra["x_label"] == "Sample size" and paired.extra["target"]["power"] == 0.9
+    assert paired.extra["x_label"] == "Number of pairs" and paired.extra["target"]["power"] == 0.9
+    assert "per group" not in paired.interpretation and "pairs" in paired.interpretation
+    unequal = pw.power_curve(effect_size=0.5, ratio=2.0)
+    assert unequal.extra["x_label"] == "Sample size of group 1"
+    assert "48 subjects in group 1 and 96 in group 2 (144 in total)" in unequal.interpretation
+    one = pw.power_curve(effect_size=0.5, design="one-sample")
+    assert one.extra["x_label"] == "Number of values" and "values" in one.interpretation
+
+
+def test_power_wording_entered_sample_size_and_lower_tail_effect():
+    """An n entered by the user is not labelled 'exact'; the detectable effect of a
+    lower-tailed test is described as 'or more negative', not 'or larger'."""
+    res = pw.power_ttest(n=20, effect_size=0.5)
+    assert res.parameter("Sample size (per group)").unit_note == "As entered."
+    assert not any("exact" in p.name for p in res.parameters)
+    solved = pw.power_ttest(effect_size=0.5, power=0.8)
+    assert solved.parameter("Sample size, exact (per group)").unit_note == "Solved (fractional)."
+    unequal = pw.power_ttest(n=20, effect_size=0.5, ratio=2.0)
+    assert unequal.parameter("Sample size (group 1)").value == 20
+    low = pw.power_ttest(n=20, power=0.8, alternative="less")
+    assert "or more negative" in low.interpretation and "or larger" not in low.interpretation
+    anova = pw.power_anova(k_groups=3, n=10, effect_size=0.25)
+    assert anova.parameter("Sample size per group").unit_note == "As entered."
     custom = pw.power_curve(effect_size=0.8, n_values=[30, 5, 10, 10, 20])
     assert custom.extra["curve"]["x"] == [5.0, 10.0, 20.0, 30.0]
     small = pw.power_curve(effect_size=0.05)  # a long curve is thinned to at most 300 points
