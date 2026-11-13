@@ -761,3 +761,102 @@ def test_registry_multiple_regression():
         run_analysis(text_only, "multiple_regression")
     table.exclude([(0, "*"), (1, "dose")])
     assert run_analysis(table, "multiple_regression").n == {"y": 38}
+
+
+# =============================================================================
+# Audit part 2 (C1): offset and unit invariance of the regression computations
+# =============================================================================
+def _line_summary(res):
+    slope = res.parameter("Slope")
+    gof = res.extra["goodness_of_fit"]
+    return [res.statistic, res.p_value, slope.statistic, slope.p_value, gof["r_squared"], gof["adj_r_squared"],
+            res.extra["durbin_watson"], res.extra["breusch_pagan"]["lm"], res.extra["breusch_pagan"]["p_value"],
+            *[a.p_value for a in res.assumptions if a.p_value is not None]]
+
+
+_OFF_X = np.arange(1.0, 13.0)
+_OFF_Y = np.array([2.3, 3.1, 7.2, 7.9, 9.4, 13.8, 13.1, 17.6, 17.2, 21.5, 21.9, 25.0])
+
+
+@pytest.mark.parametrize("offset", [1e9, 1e12, 1e15])
+def test_linear_regression_does_not_depend_on_a_large_offset_in_x(offset):
+    """X = offset + (1..12): exactly representable, and slope, SE, tests, residuals, bands and
+    the Fieller interval are invariant to adding a constant to X. A plain x - mean(x) loses the
+    centring at 1e15 (the running sum of twelve values exceeds 2**53)."""
+    big = _OFF_X + offset
+    assert np.array_equal(big - offset, _OFF_X)
+    base, res = linear_regression(_OFF_X, _OFF_Y), linear_regression(big, _OFF_Y)
+    assert _line_summary(res) == pytest.approx(_line_summary(base), rel=1e-9)
+    for name in ("value", "se", "ci_low", "ci_high"):
+        assert getattr(res.parameter("Slope"), name) == pytest.approx(getattr(base.parameter("Slope"), name), rel=1e-9)
+    assert res.extra["residuals"]["residual"] == pytest.approx(base.extra["residuals"]["residual"], rel=1e-9, abs=1e-12)
+    for key in ("y", "ci_low", "ci_high", "pred_low", "pred_high"):
+        assert res.extra["curve"][key] == pytest.approx(base.extra["curve"][key], rel=1e-9)
+    # X-intercept and its Fieller limits shift by the offset (to the resolution of doubles there)
+    xi, xb = res.parameter("X-intercept"), base.parameter("X-intercept")
+    resolution = 4 * np.spacing(offset)
+    assert xi.value - offset == pytest.approx(xb.value, abs=resolution)
+    assert xi.ci_low - offset == pytest.approx(xb.ci_low, abs=resolution)
+    assert xi.ci_high - offset == pytest.approx(xb.ci_high, abs=resolution)
+    # exact rational check of the slope from the centred sums
+    dx, dy = _OFF_X - _OFF_X.mean(), _OFF_Y - _OFF_Y.mean()
+    assert res.parameter("Slope").value == pytest.approx(float(dx @ dy) / float(dx @ dx), rel=1e-12)
+    assert_strict_json(res)
+
+
+def test_linear_regression_large_offset_in_y_too():
+    base = linear_regression(_OFF_X, _OFF_Y)
+    res = linear_regression(_OFF_X + 1e12, np.round(_OFF_Y * 8) / 8 + 1e12)
+    ref = linear_regression(_OFF_X, np.round(_OFF_Y * 8) / 8)
+    assert res.parameter("Slope").value == pytest.approx(ref.parameter("Slope").value, rel=1e-9)
+    assert res.p_value == pytest.approx(ref.p_value, rel=1e-8)
+    assert res.extra["goodness_of_fit"]["r_squared"] == pytest.approx(ref.extra["goodness_of_fit"]["r_squared"], rel=1e-9)
+    assert base.p_value is not None
+
+
+@pytest.mark.parametrize("sx, sy", [(1e-13, 1.0), (1.0, 1e-13), (1e9, 1e-9), (1e100, 1e100), (1e-100, 1e100)])
+def test_linear_regression_tests_do_not_depend_on_the_units(sx, sy):
+    base = linear_regression(_OFF_X, _OFF_Y)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        res = linear_regression(_OFF_X * sx, _OFF_Y * sy)
+    assert _line_summary(res) == pytest.approx(_line_summary(base), rel=1e-8)
+    assert res.parameter("Slope").value == pytest.approx(base.parameter("Slope").value * sy / sx, rel=1e-9)
+    assert res.parameter("Y-intercept").value == pytest.approx(base.parameter("Y-intercept").value * sy, rel=1e-9)
+    assert res.parameter("X-intercept").value == pytest.approx(base.parameter("X-intercept").value * sx, rel=1e-9)
+
+
+@pytest.mark.parametrize("sx, sy, offset", [(1.0, 1.0, 1e12), (1e-13, 1e-13, 0.0), (1e9, 1e100, 0.0)])
+def test_compare_slopes_does_not_depend_on_units_or_offset(sx, sy, offset):
+    rng = np.random.default_rng(12)
+    x = np.arange(1.0, 11.0)
+    ya, yb = 2.0 * x + rng.normal(0, 1, 10), 1.2 * x + 3 + rng.normal(0, 1, 10)
+    base = compare_slopes({"a": (x, ya), "b": (x, yb)})
+    res = compare_slopes({"a": (x * sx + offset, ya * sy), "b": (x * sx + offset, yb * sy)})
+    assert res.statistic == pytest.approx(base.statistic, rel=1e-8)
+    assert res.p_value == pytest.approx(base.p_value, rel=1e-7)
+    elev, ref = res.extra["elevation_test"], base.extra["elevation_test"]
+    assert elev["f"] == pytest.approx(ref["f"], rel=1e-8)
+    assert res.assumptions[0].p_value == pytest.approx(base.assumptions[0].p_value, rel=1e-6)
+    assert res.parameters[0].value == pytest.approx(base.parameters[0].value * sy / sx, rel=1e-9)
+
+
+def test_centre_is_accurate_with_a_huge_offset_and_constant_is_ulp_based():
+    from torusplot.stats.regression import centre
+
+    x = np.arange(1.0, 13.0) + 1e15
+    mean, dev = centre(x)
+    assert dev == pytest.approx(np.arange(1.0, 13.0) - 6.5, abs=1e-12)  # a plain x - x.mean() is off by 0.5
+    assert mean == pytest.approx(1e15 + 6.5, abs=0.25)
+    assert not is_constant(x) and not is_constant(np.array([1e-200, 3e-200]))
+    assert is_constant(np.array([0.1 + 0.2, 0.3])) and is_constant(np.array([1e15, 1e15]))
+    with pytest.raises(StatsError, match="identical"):
+        linear_regression([2.0, 2.0, 2.0], [1.0, 2.0, 3.0])
+    # Breusch-Pagan and Durbin-Watson are unit- and offset-free
+    resid = np.array([0.3, -0.2, 0.5, -0.6, 0.1, 0.4, -0.5, 0.2])
+    z = np.arange(8.0)
+    ref = breusch_pagan(resid, z)
+    for scale, shift in ((1e-150, 0.0), (1e150, 0.0), (1.0, 1e15)):
+        got = breusch_pagan(resid * scale, z + shift)
+        assert got["lm"] == pytest.approx(ref["lm"], rel=1e-9) and got["p_value"] == pytest.approx(ref["p_value"], rel=1e-9)
+        assert durbin_watson(resid * scale) == pytest.approx(durbin_watson(resid), rel=1e-12)

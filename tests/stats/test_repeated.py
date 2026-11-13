@@ -1202,7 +1202,7 @@ def test_rm_anova_with_extreme_magnitudes_gives_the_unit_free_result_and_says_wh
     assert twoway.statistic == pytest.approx(rp.anova_rm_twoway(_scale_twoway(), "y", "s", "a", "b").statistic,
                                              rel=1e-9)
     for r in (res, mixed, twoway):
-        assert all(row["ss"] is None for row in r.anova_table if row["kind"] != "total" or True)
+        assert all(row["ss"] is None for row in r.anova_table)
         assert any("cannot be written as ordinary numbers" in w for w in r.warnings)
         assert all(math.isfinite(d["mean"]) for d in r.descriptives)
         json.loads(r.model_dump_json())

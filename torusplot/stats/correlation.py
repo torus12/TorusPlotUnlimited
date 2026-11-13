@@ -208,6 +208,15 @@ def _leave_one_out(x: np.ndarray, y: np.ndarray, r: float, alpha: float) -> Assu
     return AssumptionCheck(name=name, statistic=change, status="pass", detail=detail)
 
 
+def _tail_text(alternative: str) -> str:
+    """Explicit label for a one-tailed P value (empty for the usual two-tailed test)."""
+    if alternative == "two-sided":
+        return ""
+    sign = "positive" if alternative == "greater" else "negative"
+    return (f" The P value is one-tailed: it tests only for a {sign} correlation, and the confidence "
+            "interval is one-sided to match.")
+
+
 def _strength(r: float) -> str:
     label = magnitude_r(r)
     direction = "positive" if r > 0 else "negative" if r < 0 else "no"
@@ -335,7 +344,8 @@ def pearson(
     else:
         result.interpretation = (
             f"{names[0]} and {names[1]} show a {_strength(r)} linear correlation "
-            f"(Pearson r = {fmt(r, 3)}{ci_text}; n = {n} pairs), which is {sig_phrase(p, alpha)}. "
+            f"(Pearson r = {fmt(r, 3)}{ci_text}; n = {n} pairs), which is {sig_phrase(p, alpha)}."
+            f"{_tail_text(alternative)} "
             f"r squared = {fmt(r2, 3)}: about {fmt(100 * r2, 3)}% of the variance of one variable "
             "is shared with the other. Correlation alone is not evidence that one variable causes "
             "the other."
@@ -506,7 +516,8 @@ def spearman(
     result.interpretation = (
         f"{names[0]} and {names[1]} show a {_strength(rho)} monotonic association "
         f"(Spearman rho = {fmt(rho, 3)}{ci_text}; n = {n} pairs), which is {sig_phrase(p, alpha)} "
-        f"({p_method}). A positive rho means that higher values of one variable tend to go with "
+        f"({p_method}).{_tail_text(alternative)} A positive rho means that higher values of one "
+        "variable tend to go with "
         "higher values of the other; it does not show that one causes the other."
     )
     result.methods_text = (

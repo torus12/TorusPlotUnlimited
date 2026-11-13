@@ -500,3 +500,73 @@ def test_registry_correlation_matrix():
     # user exclusions are respected
     col.exclude([(4, "C")])
     assert run_analysis(col, "correlation_matrix").extra["matrix"]["n"][0][2] == 4
+
+
+# =============================================================================
+# Audit part 2 (C1): unit and offset invariance, shared ulp-based "constant" test
+# =============================================================================
+def _corr_summary(res):
+    return [res.statistic, res.p_value, res.effect_sizes[0].value, res.effect_sizes[0].ci_low,
+            res.effect_sizes[0].ci_high, *[a.p_value for a in res.assumptions if a.p_value is not None]]
+
+
+@pytest.mark.parametrize("func", [pearson, spearman])
+@pytest.mark.parametrize("sx, sy", [(1e-13, 1.0), (1.0, 1e-13), (1e9, 1e-9), (1e150, 1e150), (1e-150, 1e150)])
+def test_correlation_does_not_depend_on_the_units(func, sx, sy):
+    base = func(X, Y)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        res = func(X * sx, Y * sy)
+    assert _corr_summary(res) == pytest.approx(_corr_summary(base), rel=1e-9)
+    assert_strict_json(res)
+
+
+@pytest.mark.parametrize("func", [pearson, spearman])
+@pytest.mark.parametrize("offset", [1e9, 1e12, 1e15])
+def test_correlation_does_not_depend_on_a_large_common_offset(func, offset):
+    """X = offset + small integers is exactly representable and clearly not constant; a plain
+    x - mean(x) loses the centring once the running sum passes 2**53 (twelve values at 1e15)."""
+    x = np.arange(1.0, 13.0)
+    y = np.array([2.3, 3.1, 7.2, 7.9, 9.4, 13.8, 13.1, 17.6, 17.2, 21.5, 21.9, 25.0])
+    assert np.array_equal((x + offset) - offset, x)
+    base, res = func(x, y), func(x + offset, y)
+    assert _corr_summary(res) == pytest.approx(_corr_summary(base), rel=1e-9)
+    if func is pearson:
+        assert res.effect_sizes[0].value == pytest.approx(stats.pearsonr(x, y)[0], rel=1e-12)
+
+
+def test_constant_means_identical_up_to_rounding_only():
+    from torusplot.stats.correlation import is_constant
+
+    assert is_constant(np.array([5.0, 5.0])) and is_constant(np.array([0.1 + 0.2, 0.3]))
+    assert not is_constant(np.array([1e15 + 1, 1e15 + 2]))          # distinct doubles on a huge offset
+    assert not is_constant(np.array([1e-15, 3e-15]))                # small units
+    assert not is_constant(np.array([1e-200, 3e-200]))              # no absolute floor at all
+    with pytest.raises(StatsError, match="identical"):
+        pearson([3.0, 3.0, 3.0, 3.0], [1.0, 2.0, 3.0, 4.0])
+    with pytest.raises(StatsError, match="identical"):
+        spearman([1.0, 2.0, 3.0], [0.1 + 0.2, 0.3, 0.3])
+
+
+def test_correlation_matrix_is_offset_and_unit_invariant():
+    rng = np.random.default_rng(5)
+    df = pd.DataFrame(rng.normal(size=(15, 3)), columns=list("abc"))
+    df["b"] += 0.5 * df["a"]
+    moved = pd.DataFrame({"a": np.round(df["a"] * 8) / 8 * 1e-13, "b": df["b"] * 1e150, "c": df["c"]})
+    plain = pd.DataFrame({"a": np.round(df["a"] * 8) / 8, "b": df["b"], "c": df["c"]})
+    base = correlation_matrix(plain)
+    res = correlation_matrix(moved)
+    for pb, pr in zip(base.extra["pairs"], res.extra["pairs"]):
+        assert pr["r"] == pytest.approx(pb["r"], rel=1e-9) and pr["p"] == pytest.approx(pb["p"], rel=1e-8)
+    shifted = plain.assign(a=plain["a"] + 1e15)
+    assert np.array_equal(shifted["a"] - 1e15, plain["a"])
+    for pb, pr in zip(base.extra["pairs"], correlation_matrix(shifted).extra["pairs"]):
+        assert pr["r"] == pytest.approx(pb["r"], rel=1e-9)
+
+
+def test_one_tailed_correlation_says_so_in_the_interpretation():
+    two = pearson(X, Y)
+    one = pearson(X, Y, alternative="greater")
+    assert one.p_value == pytest.approx(two.p_value / 2, rel=1e-9)
+    assert "one-tailed" in one.interpretation and "one-tailed" not in two.interpretation
+    assert "one-tailed" in spearman(X, Y, alternative="less").interpretation
