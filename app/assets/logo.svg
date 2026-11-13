@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 260 64" width="260" height="64" role="img" aria-label="TorusPlot">
+  <title>TorusPlot</title>
+  <!-- Original TorusPlot mark (c) 2026 Torus Washington LLC: a torus ring drawn as two offset ellipses with three data points. -->
+  <g fill="none" stroke-linecap="round">
+    <ellipse cx="32" cy="32" rx="24" ry="13" stroke="#27318B" stroke-width="6"/>
+    <ellipse cx="32" cy="32" rx="24" ry="13" stroke="#17A398" stroke-width="6" stroke-dasharray="38 200" stroke-dashoffset="-18"/>
+    <ellipse cx="32" cy="32" rx="9" ry="3.2" stroke="#27318B" stroke-width="2.4" opacity="0.55"/>
+  </g>
+  <circle cx="14" cy="14" r="3.4" fill="#E4572E"/>
+  <circle cx="32" cy="9" r="3.4" fill="#F2A541"/>
+  <circle cx="50" cy="14" r="3.4" fill="#17A398"/>
+  <text x="68" y="41" font-family="Inter, 'Segoe UI', Arial, sans-serif" font-size="27" font-weight="700" fill="#16181D">Torus<tspan fill="#27318B" font-weight="500">Plot</tspan></text>
+</svg>
