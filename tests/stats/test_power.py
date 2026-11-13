@@ -172,8 +172,10 @@ def test_extreme_inputs_do_not_produce_nan():
     minimal = pw.power_ttest(effect_size=50.0, power=0.8)
     assert minimal.extra["n_exact"] == 2.0 and any("smallest allowed sample size" in w for w in minimal.warnings)
     assert pw.power_anova(k_groups=3, effect_size=50.0, n=1000).extra["power"] == pytest.approx(1.0)
-    # statsmodels' ANOVA power is NaN here (noncentrality 1470); the true power is 1
-    assert math.isnan(float(FTestAnovaPower().power(1.75, 480, 0.01, k_groups=3)))
+    # statsmodels' ANOVA power is NaN here with scipy < 1.18 (noncentrality 1470; the noncentral
+    # F tail underflows); newer scipy returns the true power of 1. TorusPlot must give 1 either way.
+    reference = float(FTestAnovaPower().power(1.75, 480, 0.01, k_groups=3))
+    assert math.isnan(reference) or reference == pytest.approx(1.0)
     assert pw.power_anova(k_groups=3, effect_size=1.75, n=160, alpha=0.01).extra["power"] == pytest.approx(1.0)
     assert any("smallest allowed" in w for w in pw.power_anova(k_groups=3, effect_size=50.0, power=0.8).warnings)
 

@@ -1,0 +1,4 @@
+# OPTIONAL: only needed if you choose the Anthropic cloud provider for the AI features.
+# Not installed by the launcher. Install with:  pip install -r requirements-ai.txt
+# (Ollama, Gemini and OpenAI providers need no extra package.)
+anthropic>=1,<2

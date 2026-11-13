@@ -212,7 +212,8 @@ def test_ks_distance_from_first_principles_and_lilliefors_p(data):
     assert res["p_value"] == pytest.approx(p, rel=1e-12)
     assert "Lilliefors" in res["p_note"]
     # scipy's KS distance against the fitted normal is the same number...
-    ks = stats.kstest(data, "norm", args=(np.mean(data), np.std(data, ddof=1)))
+    # (a frozen distribution's cdf is passed: scipy 1.18 rejects the "norm" + args form)
+    ks = stats.kstest(data, stats.norm(np.mean(data), np.std(data, ddof=1)).cdf)
     assert res["statistic"] == pytest.approx(ks.statistic, rel=1e-10)
     # ...but its classical P value ignores that the parameters were estimated: too large
     assert ks.pvalue > res["p_value"] or res["p_value"] >= 0.99
@@ -226,7 +227,7 @@ def test_uncorrected_ks_p_value_is_invalid_lilliefors_is_calibrated():
     n_sim = 400
     for _ in range(n_sim):
         x = rng.normal(size=30)
-        naive += stats.kstest(x, "norm", args=(x.mean(), x.std(ddof=1))).pvalue < 0.05
+        naive += stats.kstest(x, stats.norm(x.mean(), x.std(ddof=1)).cdf).pvalue < 0.05
         corrected += am.kolmogorov_smirnov_normal(x)["p_value"] < 0.05
     assert naive / n_sim < 0.01
     assert 0.02 <= corrected / n_sim <= 0.09
