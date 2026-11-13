@@ -800,12 +800,68 @@ def test_wilcoxon_method_selection_and_degenerate_inputs():
         tg.wilcoxon_one_sample(A, "abc")
 
 
+def _brute_rank_sum_p(a, b, alternative):
+    """Exact conditional (permutation) P value of the rank sum with ties, by enumerating
+    every split of the pooled values into groups of the observed sizes."""
+    pooled = np.concatenate([a, b])
+    ranks = stats.rankdata(pooled)
+    n1 = len(a)
+    observed = ranks[:n1].sum()
+    sums = np.array([ranks[list(idx)].sum() for idx in itertools.combinations(range(pooled.size), n1)])
+    upper = np.mean(sums >= observed - 1e-9)
+    lower = np.mean(sums <= observed + 1e-9)
+    if alternative == "greater":
+        return float(upper)
+    if alternative == "less":
+        return float(lower)
+    return float(min(1.0, 2.0 * min(upper, lower)))
+
+
+def _brute_signed_rank_p(d, alternative):
+    """Exact conditional P value of W+ with tied |d| (zeros discarded), by enumerating
+    every pattern of signs of the observed mid-ranks."""
+    d = np.asarray(d, dtype=float)
+    d = d[d != 0]
+    ranks = stats.rankdata(np.abs(d))
+    observed = ranks[d > 0].sum()
+    totals = np.array([sum(r for r, s in zip(ranks, signs) if s)
+                       for signs in itertools.product((0, 1), repeat=d.size)])
+    upper = np.mean(totals >= observed - 1e-9)
+    lower = np.mean(totals <= observed + 1e-9)
+    if alternative == "greater":
+        return float(upper)
+    if alternative == "less":
+        return float(lower)
+    return float(min(1.0, 2.0 * min(upper, lower)))
+
+
+@pytest.mark.parametrize("alt", ALTERNATIVES)
+def test_rank_tests_exact_p_with_ties_equals_brute_force_enumeration(alt):
+    """Small tied samples get the exact conditional P value (permutation distribution of
+    the mid-ranks); it must equal brute-force enumeration."""
+    cases = [([1.0, 1.0, 1.0], [2.0, 2.0, 2.0]), ([1.0, 2.0, 2.0, 3.0], [2.0, 3.0, 3.0, 5.0, 5.0]),
+             ([0.0, 1.0, 1.0, 1.0, 4.0, 4.0, 6.0], [1.0, 4.0, 5.0, 5.0, 6.0, 7.0, 7.0])]
+    for a, b in cases:
+        res = tg.mann_whitney(a, b, alternative=alt)
+        assert res.extra["exact"] and res.extra["ties"]
+        assert res.p_value == pytest.approx(_brute_rank_sum_p(np.array(a), np.array(b), alt), rel=1e-12)
+    for d in ([1.0, 1.0, 1.0, 1.0, 1.0], [1.0, -1.0, 2.0, 2.0, 3.0, 0.0], [2.0, 2.0, -2.0, 3.0, 5.0, 5.0, 5.0]):
+        res = tg.wilcoxon_one_sample(d, 0.0, alternative=alt)
+        assert res.extra["exact"] and res.extra["ties"]
+        assert res.p_value == pytest.approx(_brute_signed_rank_p(d, alt), rel=1e-12)
+    # the five tied differences of +1: exact two-sided P = 2 / 2^5
+    assert tg.wilcoxon_one_sample([1.0] * 5, 0.0).p_value == pytest.approx(0.0625)
+
+
 def test_rank_tests_with_random_ties_and_zeros_match_scipy():
     """Randomised cross-check (fixed seed) on small integer data full of ties and zeros:
-    every P value equals scipy's with the same method (exact, or normal approximation with
-    tie + continuity correction), for all alternatives and both zero-handling methods."""
+    every P value equals scipy's whenever both use the same method (exact without ties, or
+    normal approximation with tie + continuity correction), for all alternatives and both
+    zero-handling methods. Small tied samples get the exact conditional P value instead
+    (``extra["p_method"]`` says so), which scipy does not compute; those are compared with
+    brute-force enumeration."""
     rng = np.random.default_rng(0)
-    compared = 0
+    compared = enumerated = 0
     for _ in range(400):
         n1, n2 = rng.integers(2, 12, 2)
         a = rng.integers(0, 6, n1).astype(float)
@@ -815,12 +871,17 @@ def test_rank_tests_with_random_ties_and_zeros_match_scipy():
         if res.extra["p_method"] == "all values identical":
             assert res.p_value == 1.0
             continue
+        if res.extra["exact"] and res.extra["ties"]:
+            assert res.extra["p_method"] == tg._P_EXACT_TIES
+            assert res.p_value == pytest.approx(_brute_rank_sum_p(a, b, alt), rel=1e-9, abs=1e-12)
+            enumerated += 1
+            continue
         ref = stats.mannwhitneyu(a, b, alternative=alt, use_continuity=True,
                                  method="exact" if res.extra["exact"] else "asymptotic")
         assert res.p_value == pytest.approx(ref.pvalue, rel=1e-9, abs=1e-12)
         compared += 1
-    assert compared > 350
-    compared = 0
+    assert compared > 200 and enumerated > 30
+    compared = enumerated = 0
     for _ in range(400):
         d = rng.integers(-5, 6, int(rng.integers(2, 14))).astype(float)
         alt = str(rng.choice(ALTERNATIVES))
@@ -832,13 +893,18 @@ def test_rank_tests_with_random_ties_and_zeros_match_scipy():
         if res.extra["exact"]:
             if zero_method == "pratt" and res.extra["n_zero"]:
                 continue  # exact Pratt test: checked against enumeration above
+            if res.extra["ties"]:
+                assert res.extra["p_method"].startswith(tg._P_EXACT_TIES)
+                assert res.p_value == pytest.approx(_brute_signed_rank_p(d, alt), rel=1e-9, abs=1e-12)
+                enumerated += 1
+                continue
             ref = stats.wilcoxon(d[d != 0], alternative=alt, method="exact")
         else:
             ref = stats.wilcoxon(d, alternative=alt, zero_method=zero_method, correction=True,
                                  method="asymptotic")
         assert res.p_value == pytest.approx(ref.pvalue, rel=1e-9, abs=1e-12)
         compared += 1
-    assert compared > 300
+    assert compared > 150 and enumerated > 30
 
 
 # ----------------------------------------------------------------------- registry

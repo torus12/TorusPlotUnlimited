@@ -18,6 +18,13 @@ Definitions used
   values or zero spread).
 * ``cv_percent``: 100 * sd / mean (``None`` when the mean is 0).
 * ``geometric_mean``: exp(mean(ln x)); only defined (else ``None``) when every value > 0.
+
+Numerical range: all moments are computed on the values divided by a power of two near
+their largest magnitude (an exact operation) and scaled back, so the summary is correct
+for any finite numbers, from 1e-300 to 1e300. A group counts as constant (SD = 0) only
+when its values agree to within floating-point rounding. ``sum`` is ``None`` when the
+total exceeds the largest representable number; an SD or confidence limit that cannot be
+represented raises ``StatsError``.
 """
 
 from __future__ import annotations
@@ -30,7 +37,7 @@ import numpy as np
 from scipy import stats
 
 from ..data.tables import DataTable
-from ._utils import StatsError, clean, fmt, is_constant
+from ._utils import StatsError, clean, fmt, is_constant, pow2_back, pow2_scaled
 from .registry import ParamSpec, register
 from .result import AssumptionCheck, StatResult
 
@@ -73,17 +80,22 @@ def _empty_row() -> dict[str, Any]:
 def _describe_clean(arr: np.ndarray, level: float) -> dict[str, Any]:
     """``describe`` for an already-cleaned, non-empty 1-D float array."""
     n = int(arr.size)
-    mean = float(arr.mean())
-    q1, median, q3 = (float(v) for v in np.percentile(arr, [25.0, 50.0, 75.0]))
+    y, e = pow2_scaled(arr)  # exact scaling: no overflow / underflow in the moments below
+    mean_y = float(y.mean())
+    mean = pow2_back(mean_y, e)
+    q1_y, median_y, q3_y = (float(v) for v in np.percentile(y, [25.0, 50.0, 75.0]))
+    total_y = float(y.sum())
+    with np.errstate(over="ignore", under="ignore"):
+        total = float(np.ldexp(total_y, e))
     out: dict[str, Any] = {
         "n": n,
         "mean": mean,
         "sd": None,
         "sem": None,
-        "median": median,
-        "q1": q1,
-        "q3": q3,
-        "iqr": q3 - q1,
+        "median": pow2_back(median_y, e),
+        "q1": pow2_back(q1_y, e),
+        "q3": pow2_back(q3_y, e),
+        "iqr": pow2_back(q3_y - q1_y, e),
         "min": float(arr.min()),
         "max": float(arr.max()),
         "ci_low": None,
@@ -92,18 +104,20 @@ def _describe_clean(arr: np.ndarray, level: float) -> dict[str, Any]:
         "skewness": None,
         "kurtosis": None,
         "geometric_mean": None,
-        "sum": float(arr.sum()),
+        "sum": total if math.isfinite(total) else None,
     }
     if n >= 2:
         constant = is_constant(arr)
-        sd = 0.0 if constant else float(arr.std(ddof=1))
-        sem = sd / math.sqrt(n)
-        half = float(stats.t.ppf(0.5 + level / 2.0, n - 1)) * sem
-        out.update(sd=sd, sem=sem, ci_low=mean - half, ci_high=mean + half)
-        if mean != 0.0:
-            out["cv_percent"] = 100.0 * sd / mean
+        sd_y = 0.0 if constant else float(y.std(ddof=1))
+        sem_y = sd_y / math.sqrt(n)
+        half_y = float(stats.t.ppf(0.5 + level / 2.0, n - 1)) * sem_y
+        out.update(sd=pow2_back(sd_y, e), sem=pow2_back(sem_y, e),
+                   ci_low=pow2_back(mean_y - half_y, e), ci_high=pow2_back(mean_y + half_y, e))
+        if mean_y != 0.0:
+            cv = 100.0 * sd_y / mean_y
+            out["cv_percent"] = cv if math.isfinite(cv) else None
         if not constant:
-            dev = arr - mean
+            dev = y - mean_y
             m2 = float(np.mean(dev**2))
             if m2 > 0.0:
                 if n >= 3:

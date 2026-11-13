@@ -66,10 +66,10 @@ calculation written in the test. Where no published example is used, the table s
 | Brown-Forsythe ANOVA | `brown_forsythe_anova` | Column | Brown MB, Forsythe AB (1974) Technometrics 16:129-132 | Cross-check with statsmodels and the formula. No published example |
 | Kruskal-Wallis test | `kruskal_wallis` | Column | Kruskal WH, Wallis WA (1952) J Am Stat Assoc 47:583-621 | Published: Hollander & Wolfe (1973) data; ozone data with missing values; cross-check with SciPy |
 | Friedman test | `friedman` | Column | Friedman M (1937) J Am Stat Assoc 32:675-701 | Published: Hollander & Wolfe (1973) rounding-first-base data; cross-check with SciPy |
-| Two-way ANOVA | `anova_twoway` | Grouped, Multiple variables | Fisher RA (1925) Statistical Methods for Research Workers. Oliver & Boyd, Edinburgh | Published: Montgomery battery-life experiment; Crampton (1947) tooth-growth data; cross-check with statsmodels |
+| Two-way ANOVA | `anova_twoway` | Grouped, Multiple variables | Fisher RA (1925) Statistical Methods for Research Workers. Oliver & Boyd, Edinburgh | Published: Montgomery battery-life experiment; constructed balanced design with exact sums of squares; cross-check with statsmodels |
 | Three-way ANOVA | `anova_threeway` | Multiple variables | Fisher RA (1925) Statistical Methods for Research Workers. Oliver & Boyd, Edinburgh | Cross-check with statsmodels `anova_lm`; classical balanced formulas. No published example |
 | ANCOVA (analysis of covariance) | `ancova` | Multiple variables | Cochran WG (1957) Analysis of covariance: its nature and uses. Biometrics 13:261-281 | Cross-check with statsmodels; first-principles adjusted means. No published example |
-| Repeated-measures one-way ANOVA | `anova_rm_oneway` | Column | Greenhouse SW, Geisser S (1959) On methods in the analysis of profile data. Psychometrika 24:95-112 | Published: Field, 8 subjects x 4 conditions (F, Mauchly, epsilons); cross-check with statsmodels `AnovaRM` |
+| Repeated-measures one-way ANOVA | `anova_rm_oneway` | Column | Greenhouse SW, Geisser S (1959) On methods in the analysis of profile data. Psychometrika 24:95-112 | Constructed 8 x 4 data checked against first-principles F, Mauchly and epsilons; cross-check with statsmodels `AnovaRM` |
 | Mixed-design ANOVA (repeated measures by group) | `anova_mixed` | Grouped, Multiple variables | Winer BJ, Brown DR, Michels KM (1991) Statistical Principles in Experimental Design, 3rd ed. McGraw-Hill | Cross-check with statsmodels (`mixedlm`, `anova_lm` on contrast scores); first principles. No published example |
 | Two-way repeated-measures ANOVA | `anova_rm_twoway` | Multiple variables | Greenhouse SW, Geisser S (1959) On methods in the analysis of profile data. Psychometrika 24:95-112 | Cross-check with statsmodels `AnovaRM`. No published example |
 | Correlation (Pearson or Spearman) | `correlation` | XY, Column, Multiple variables | Pearson K (1896) Philos Trans R Soc A 187:253-318; Spearman C (1904) Am J Psychol 15:72-101 | Published: Anscombe's quartet; cross-check with SciPy; exact Spearman P by brute-force enumeration |
@@ -555,8 +555,10 @@ Registry keys: `anova_twoway`, `anova_threeway`, `ancova`.
   fits in TorusPlot's own code. Contrasts, Tukey P values, intervals and effect sizes are TorusPlot's
   own code.
 - **Comparisons.** `simple_b_within_a` and the like compare the levels of one factor within each
-  level of the others; `main_a` and the like compare marginal means (unweighted averages of the cell
-  means); `all_cells` compares every cell with every other. Tukey: P = P(Q[k, df] > abs(t) sqrt(2)),
+  level of the others; `main_a` and the like compare estimated marginal (least-squares) means: the
+  fitted model's cell predictions averaged with equal weights, with standard errors from the model's
+  coefficient covariance, so in a model without interaction the comparisons follow the additive fit;
+  `all_cells` compares every cell with every other. Tukey: P = P(Q[k, df] > abs(t) sqrt(2)),
   with k the number of means in one family. The standardized effect of each comparison is
   Hedges' g = difference / sqrt(MS residual) x J(df), with a noncentral-t interval.
 - **ANCOVA.** Model: value = group effect + common slope x covariate + error. Reported: the group
@@ -575,7 +577,7 @@ Registry keys: `anova_twoway`, `anova_threeway`, `ancova`.
   total. Type II main effects assume no interaction; a warning appears when one is significant.
   The models are fixed-effects models. There is no rank-based two-way test.
 - **Validation.** Published: Montgomery, battery-life 3 x 3 experiment (sums of squares, F = 7.91,
-  28.97, 3.56); tooth-growth data of Crampton (1947) (F = 15.572, 92.000, 4.107). Cross-checks:
+  28.97, 3.56). Constructed balanced 2 x 3 data with exact sums of squares. Cross-checks:
   statsmodels `anova_lm` (Type I, II, III) on a hand-written formula, `pairwise_tukeyhsd`,
   `multipletests`, `t_test` on coefficient contrasts; classical balanced formulas; nested fits of a
   hand-built design matrix. **No published worked example is used for the three-way ANOVA or for
@@ -639,8 +641,10 @@ All quantities come from S = E / df_e, the covariance matrix of the orthonormal 
   cannot be tested (warning). With unequal group sizes in a mixed design, Type III gives every group
   equal weight for the within factor and Type II weights groups by size. Designs with more than one
   between factor or more than two within factors are not supported.
-- **Validation.** Published: Field, 8 subjects x 4 conditions ("bushtucker" example): F(3, 21) = 3.79,
-  Mauchly W = 0.136, P = 0.047, Greenhouse-Geisser epsilon 0.533, Huynh-Feldt epsilon 0.666.
+- **Validation.** Constructed 8 subjects x 4 conditions with violated sphericity: F, Mauchly W and
+  chi-square, Greenhouse-Geisser and Huynh-Feldt epsilons and corrected P values agree with
+  first-principles formulas. (An earlier textbook example was reproduced exactly, F(3, 21) = 3.79,
+  W = 0.136, P = 0.047, epsilons 0.533 / 0.666, then removed for licensing reasons, D-030.)
   Cross-checks: statsmodels `AnovaRM` (one and two within factors), `mixedlm` for the balanced mixed
   design (agreement to about 1e-3, limited by the optimiser), `anova_lm` on contrast scores for the
   unbalanced mixed design, SciPy `ttest_rel` and `ttest_ind`. First principles: textbook
@@ -798,7 +802,9 @@ Registry keys: `nonlinear_regression`, `compare_fits`, `compare_curve_parameter`
   association; one-site binding (specific, total); exponential growth; Gaussian; straight line;
   quadratic. Dose-response models are fitted on LogEC50.
 - **User-defined equations.** The text is parsed, never executed. Only numbers, X, parameter names,
-  `+ - * / ^`, brackets and a fixed list of mathematical functions are accepted.
+  `+ - * / ^`, brackets and a fixed list of mathematical functions are accepted. `pi` is the
+  constant 3.14159...; a bare `e` is a **parameter** like any other letter (write `exp(1)` for
+  Euler's number), and the result notes how each constant was read.
 - **Weighting.** none; 1/Y; 1/Y^2; 1/SD^2 (the SD of the replicates at each X). **The 1/Y and 1/Y^2
   weights use the observed Y values.** Some other packages weight by the predicted Y, which gives
   slightly different estimates.
@@ -889,7 +895,9 @@ Registry key: `survival`. All estimators are TorusPlot's own code.
   reaches 0.
 - **Median survival.** The first time the curve is at or below 50%. Its CI (Brookmeyer and Crowley)
   runs from the first time the lower band is at or below 50% to the first time the upper band is.
-  "Not reached" is reported when that never happens. When the curve is exactly 50% over an interval,
+  "Not reached" is reported when that never happens; in particular, when the upper band never drops
+  to 50% (for example a very small group, or once the curve reaches 0) the upper limit is "not
+  reached" rather than the last event time, as the Brookmeyer-Crowley definition requires. When the curve is exactly 50% over an interval,
   TorusPlot reports the first time; some programs report the midpoint, and a note says so.
 - **Log-rank (Mantel-Cox) test.** At each event time, group i is expected to have
   E_ij = d_j n_ij / n_j events. U_i = sum_j w_j (d_ij - E_ij), with hypergeometric covariance V.
@@ -906,7 +914,7 @@ Registry key: `survival`. All estimators are TorusPlot's own code.
 - **Limitations.** The event column must hold only 1 (event) and 0 (censored). The hazard ratio and
   the power of the log-rank test rest on proportional hazards; crossing curves make a single hazard
   ratio misleading. No Cox regression, no covariates, no stratified test. The log-rank test for
-  trend (Tarone 1975) exists in the code but is not offered in the app menu.
+  trend (Tarone 1975) is available as the `trend` option for ordered groups (for example doses).
 - **Validation.** Published: the 6-mercaptopurine leukaemia trial of Freireich et al. (1963):
   Kaplan-Meier estimates of the treated arm, medians 23 and 8 weeks, log-rank chi-square 16.79.
   Cross-checks: lifelines (`KaplanMeierFitter`, `logrank_test`, `multivariate_logrank_test`,
@@ -989,10 +997,11 @@ Registry key: `chi_square_trend`. TorusPlot's own code.
   chi2_trend = N (N sum x_i s_i - R sum n_i s_i)^2 / (R (N - R) (N sum n_i s_i^2 - (sum n_i s_i)^2)),
   on 1 df. This equals N r^2 for the correlation r between outcome and score. The rest of the
   ordinary chi-square (k - 2 df) tests departure from a straight-line trend.
-- **Assumptions.** Ordered categories, scored 1, 2, ..., k in table order; expected counts of at
-  least 5; counts; independent observations.
-- **Limitations.** In the app the scores are always 1 to k, so the test treats the steps between
-  groups as equal. TorusPlot reports the Cochran-Armitage form N r^2; some packages report
+- **Assumptions.** Ordered categories with scores that reflect their spacing (option `scores`, for
+  example "0, 1, 5"; default 1, 2, ..., k in table order); expected counts of at least 5; counts;
+  independent observations.
+- **Limitations.** With the default scores the test treats the steps between groups as equal.
+  TorusPlot reports the Cochran-Armitage form N r^2; some packages report
   (N - 1) r^2, which is slightly smaller.
 - **Validation.** Published: infant malformation by maternal alcohol consumption (Graubard and Korn
   1987, as analysed by Agresti): r = 0.0142, M^2 = 6.57 after conversion by (N - 1)/N. Cross-checks:
@@ -1164,7 +1173,13 @@ Function `recommend_test` in `torusplot/stats/recommend.py`. Not a registered an
 - **Limitations.** Choosing a test from a pre-test of the same data is a convention, not a
   guarantee: pre-tests have little power in small samples, and the two-stage procedure changes the
   error rates of the final test somewhat. Welch-type tests are always listed as alternatives. For
-  Multiple variables tables the proposal depends on column names and types. The P values of these
+  Multiple variables tables the proposal depends on column names and types, matched as whole words
+  (so a factor called "Exposure" is not mistaken for an "exp"eriment column) and confirmed by the
+  structure of the data: a column is treated as a biological replicate only if each group x
+  replicate combination holds several rows, and as a subject ID only if each subject appears once
+  per level of a within-subject factor (then a repeated-measures or mixed ANOVA is proposed). Sparse
+  contingency tables (Cochran's rule fails) are offered Fisher's exact test, which TorusPlot computes
+  for r x c tables. Small-sample cautions give the smallest attainable P value of each rank test. The P values of these
   checks can differ from the checks printed with the analysis itself, which uses plain residuals.
 - **Validation.** `tests/stats/test_recommend.py` checks each branch on constructed data.
 - **References.** Welch BL (1947) Biometrika 34:28-35. Ruxton GD (2006) The unequal variance t-test
@@ -1221,7 +1236,5 @@ a dedicated statistics package or ask a statistician.
 - **Power calculations** other than for t tests and the one-way ANOVA.
 - **Curve fitting with more than one X variable**, global fits that share several parameters, and
   robust curve fitting or ROUT for curves in the app.
-- **Custom scores for the chi-square trend test** and the **log-rank test for trend** in the app
-  (both exist in the code but are not in the menu).
 - **Data transformations in the app** (log, normalisation). Transform the values in your
   spreadsheet before you paste them.

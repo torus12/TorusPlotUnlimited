@@ -860,3 +860,65 @@ def test_centre_is_accurate_with_a_huge_offset_and_constant_is_ulp_based():
         got = breusch_pagan(resid * scale, z + shift)
         assert got["lm"] == pytest.approx(ref["lm"], rel=1e-9) and got["p_value"] == pytest.approx(ref["p_value"], rel=1e-9)
         assert durbin_watson(resid * scale) == pytest.approx(durbin_watson(resid), rel=1e-12)
+
+
+def _multi_frame():
+    rng = np.random.default_rng(2)
+    df = pd.DataFrame({"x1": np.round(rng.normal(size=30) * 64) / 64, "x2": rng.normal(size=30),
+                       "g": np.tile(["a", "b", "c"], 10)})
+    df["y"] = 1 + 2 * df.x1 - df.x2 + (df.g == "b") + rng.normal(0, 1, 30)
+    return df
+
+
+def _multi_summary(res):
+    values = [res.statistic, res.p_value, *[e.value for e in res.effect_sizes],
+              *[p.statistic for p in res.parameters[1:]], *[p.p_value for p in res.parameters[1:]],
+              *[p.value for p in res.parameters if p.name.startswith("Standardized beta")],
+              *[a.p_value for a in res.assumptions], res.extra["durbin_watson"],
+              *[row["vif"] for row in res.extra["coefficients"][1:]]]
+    return [v for v in values if v is not None]
+
+
+@pytest.mark.parametrize("sy, s1, offset", [
+    (1.0, 1.0, 1e6), (1.0, 1.0, 1e9), (1.0, 1.0, 1e12),      # a predictor with a large common offset
+    (1e-13, 1.0, 0.0), (1.0, 1e-13, 0.0), (1e100, 1e-9, 0.0), (1e-100, 1e9, 0.0),
+])
+def test_multiple_regression_does_not_depend_on_units_or_on_an_offset_of_a_predictor(sy, s1, offset):
+    """The raw design [1, x] is numerically singular when x = 1e9 + small numbers (the solver
+    then silently drops a column and every number is wrong); the fit is done on centred,
+    rescaled columns, so tests and slopes are exactly those of the well-scaled problem."""
+    df = _multi_frame()
+    base = multiple_regression(df, "y", ["x1", "x2", "g"], interactions="x1*x2", standardize=True)
+    moved = df.assign(y=df["y"] * sy, x1=df["x1"] * s1 + offset)
+    if offset:
+        assert np.array_equal(moved["x1"] - offset, df["x1"])  # the shifted values are exact
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        res = multiple_regression(moved, "y", ["x1", "x2", "g"], interactions=None if offset else "x1*x2",
+                                  standardize=True)
+    if offset:  # (the product column x1*x2 is not shift-invariant, so compare without it)
+        base = multiple_regression(df, "y", ["x1", "x2", "g"], standardize=True)
+    assert _multi_summary(res) == pytest.approx(_multi_summary(base), rel=1e-7)
+    assert res.parameter("x1").value == pytest.approx(base.parameter("x1").value * sy / s1, rel=1e-8)
+    assert res.parameter("x2").value == pytest.approx(base.parameter("x2").value * sy, rel=1e-8)
+    assert res.parameter("x2").se == pytest.approx(base.parameter("x2").se * sy, rel=1e-8)
+    if not offset:
+        assert res.parameter("Intercept").value == pytest.approx(base.parameter("Intercept").value * sy, rel=1e-7)
+        assert res.parameter("Intercept").se == pytest.approx(base.parameter("Intercept").se * sy, rel=1e-7)
+    assert_strict_json(res)
+
+
+def test_multiple_regression_with_an_offset_predictor_matches_a_centred_statsmodels_fit():
+    df = _multi_frame()
+    shifted = df.assign(x1=df["x1"] + 1e9)
+    res = multiple_regression(shifted, "y", ["x1", "x2"])
+    ref = smf.ols("y ~ x1 + x2", df).fit()  # the same model with x1 measured from 1e9
+    assert res.parameter("x1").value == pytest.approx(ref.params["x1"], rel=1e-9)
+    assert res.parameter("x1").se == pytest.approx(ref.bse["x1"], rel=1e-9)
+    assert res.parameter("x2").p_value == pytest.approx(ref.pvalues["x2"], rel=1e-8)
+    assert res.statistic == pytest.approx(ref.fvalue, rel=1e-9)
+    # intercept at x1 = 0, i.e. 1e9 units to the left of the data: b0 - 1e9 * b1, with its (huge) SE
+    assert res.parameter("Intercept").value == pytest.approx(ref.params["Intercept"] - 1e9 * ref.params["x1"], rel=1e-9)
+    assert res.parameter("Intercept").se == pytest.approx(1e9 * ref.bse["x1"], rel=1e-6)
+    with pytest.raises(StatsError, match="collinear"):
+        multiple_regression(df.assign(c=5.0), "y", ["x1", "c"])

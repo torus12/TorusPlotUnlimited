@@ -33,9 +33,21 @@ Conventions (identical for every test in this module)
 * **Confidence intervals are always two-sided** at ``ci_level``, also when the P value is
   one-tailed. The result says so in ``warnings`` when a one-tailed test is requested.
 * Exact P values for the rank tests are used when there are no ties and no more than
-  50 values per group (50 non-zero differences for the signed-rank test); otherwise the
-  normal approximation with tie correction and continuity correction is used. The
-  result states which (``extra["p_method"]`` and the interpretation).
+  50 values per group (50 non-zero differences for the signed-rank test). With ties the
+  exact *conditional* (permutation) distribution of the tied mid-ranks is used for very
+  small samples (at most 7 values per group / 7 non-zero differences, ``EXACT_TIES_MAX_N``),
+  where the normal approximation is poorest and can even fall below the smallest P value
+  that is attainable; for larger tied samples, and above 50, the normal approximation
+  with tie correction and continuity correction is used. An approximate P value is never
+  reported below the smallest value the exact test could give for these sample sizes.
+  The result states which method was used (``extra["p_method"]`` and the interpretation).
+* Numerical range: test statistics are computed on internally rescaled data (they do not
+  depend on the unit or origin of the measurements), so results are correct from 1e-300
+  to 1e300; "no variability" means equal to within floating-point rounding, nothing else.
+* Paired differences inherit the rounding error of the two values they are computed
+  from. Whether differences are equal to each other, equal to zero, or tied in size is
+  therefore judged with a tolerance of a few units in the last place of the *original*
+  values (100.1 - 100 and 1.1 - 1 are the same difference).
 """
 
 from __future__ import annotations
@@ -51,6 +63,7 @@ from scipy import stats
 from ..data.tables import DataTable
 from . import effect_sizes as es
 from ._utils import (
+    _TOO_LARGE,
     StatsError,
     alternative_label,
     check_alpha,
@@ -58,11 +71,17 @@ from ._utils import (
     ci_phrase,
     clean,
     clean_paired,
+    difference_tolerance,
+    differences_constant,
     fmt,
     is_constant,
     p_phrase,
+    pow2_back,
+    pow2_scaled,
     require_n,
+    rescale,
     sig_phrase,
+    snap_differences,
 )
 from .assumptions import brown_forsythe_test
 from .descriptives import _check_level, _describe_clean
@@ -71,6 +90,11 @@ from .result import AssumptionCheck, EffectSize, Parameter, StatResult
 
 #: Largest sample size (per group / number of non-zero differences) for exact P values.
 EXACT_MAX_N = 50
+#: Largest sample size (per group / number of non-zero differences) for which the exact
+#: permutation distribution of the *tied* mid-ranks is used automatically. Up to this size
+#: there are at most C(14, 7) = 3432 splits (2^7 = 128 sign patterns) and the normal
+#: approximation is at its worst; larger tied samples use the normal approximation.
+EXACT_TIES_MAX_N = 7
 #: Largest number of pairwise differences / Walsh averages held in memory for the
 #: Hodges-Lehmann estimate.
 _MAX_PAIRS = 10_000_000
@@ -91,6 +115,9 @@ _CITE_D = "Cohen J (1988) Statistical Power Analysis for the Behavioral Sciences
 _CITE_G = ("Hedges LV (1981) Distribution theory for Glass's estimator of effect size and related "
            "estimators. J Educ Stat 6:107-128.")
 _CITE_RB = "Kerby DS (2014) The simple difference formula. Compr Psychol 3:11.IT.3.1 (rank-biserial r)."
+_CITE_NEWCOMBE = ("Newcombe RG (2006) Confidence intervals for an effect size measure based on the "
+                  "Mann-Whitney statistic. Part 2: asymptotic methods and evaluation. Stat Med 25:559-573 "
+                  "(confidence interval of the rank-biserial r).")
 
 
 # ======================================================================= helpers
@@ -138,8 +165,11 @@ def _normality_check(arr: np.ndarray, target: str, alternative_test: str) -> Ass
                                detail="All values are identical, so normality cannot be checked.")
     with _warnings.catch_warnings():
         _warnings.simplefilter("ignore")  # scipy warns that P is approximate for n > 5000
-        res = stats.shapiro(arr)
+        res = stats.shapiro(rescale(arr).arrays[0])  # W does not depend on origin or unit
     w, p = float(res.statistic), float(res.pvalue)
+    if not (math.isfinite(w) and math.isfinite(p)):
+        return AssumptionCheck(name=name, target=target, status="warn",
+                               detail="The Shapiro-Wilk test could not be computed for these values.")
     if p < 0.05:
         return AssumptionCheck(
             name=name, target=target, statistic=w, p_value=p, status="fail",
@@ -240,27 +270,34 @@ def _independent_t(a: Iterable[Any], b: Iterable[Any], names: tuple[str, str], a
     require_n(x, 2, na, "a t test")
     require_n(y, 2, nb, "a t test")
     n1, n2 = int(x.size), int(y.size)
-    m1, m2 = float(x.mean()), float(y.mean())
-    v1 = 0.0 if is_constant(x) else float(x.var(ddof=1))
-    v2 = 0.0 if is_constant(y) else float(y.var(ddof=1))
-    diff = m1 - m2
+    row_a, row_b = _row(na, x, level), _row(nb, y, level)
+    m1, m2 = row_a["mean"], row_b["mean"]
+    # t, df and P do not depend on the origin or unit of the data: compute them on jointly
+    # centred values of order 1 (no overflow, no underflow) and scale the estimates back.
+    rs = rescale(x, y)
+    zx, zy = rs.arrays
+    v1 = 0.0 if is_constant(x) else float(zx.var(ddof=1))
+    v2 = 0.0 if is_constant(y) else float(zy.var(ddof=1))
+    diff_z = float(zx.mean()) - float(zy.mean())
     if welch:
-        se = math.sqrt(v1 / n1 + v2 / n2)
+        se_z = math.sqrt(v1 / n1 + v2 / n2)
         df = (
             (v1 / n1 + v2 / n2) ** 2 / ((v1 / n1) ** 2 / (n1 - 1) + (v2 / n2) ** 2 / (n2 - 1))
-            if se > 0 else math.nan
+            if se_z > 0 else math.nan
         )
     else:
         df = float(n1 + n2 - 2)
-        se = math.sqrt(((n1 - 1) * v1 + (n2 - 1) * v2) / df * (1.0 / n1 + 1.0 / n2))
+        se_z = math.sqrt(((n1 - 1) * v1 + (n2 - 1) * v2) / df * (1.0 / n1 + 1.0 / n2))
+    diff = rs.spread(diff_z)
+    se = rs.spread(se_z)
     warnings: list[str] = []
     t: float | None
     p: float | None
-    if se > 0:
-        t = diff / se
+    if se_z > 0:
+        t = diff_z / se_z
         p = _t_p(t, df, alternative)
-        half = float(stats.t.ppf(0.5 + level / 2.0, df)) * se
-        ci_low, ci_high = diff - half, diff + half
+        half = float(stats.t.ppf(0.5 + level / 2.0, df)) * se_z
+        ci_low, ci_high = rs.spread(diff_z - half), rs.spread(diff_z + half)
         df_out: float | None = float(df)
         se_out: float | None = se
     else:
@@ -274,7 +311,7 @@ def _independent_t(a: Iterable[Any], b: Iterable[Any], names: tuple[str, str], a
             "At least one group has only 2 values: the test has very little power and normality "
             "cannot be checked."
         )
-    elif (v1 == 0.0) != (v2 == 0.0) and se > 0:
+    elif (v1 == 0.0) != (v2 == 0.0) and se_z > 0:
         warnings.append("One group has no variability (all its values are identical); interpret with care.")
     warnings.extend(_one_sided_note(alternative, level))
 
@@ -298,8 +335,8 @@ def _independent_t(a: Iterable[Any], b: Iterable[Any], names: tuple[str, str], a
         assumptions.append(AssumptionCheck(
             name="Equal variances (Brown-Forsythe)", statistic=bf["statistic"], p_value=bf["p_value"],
             status="fail",
-            detail=f"The two groups differ in spread ({p_phrase(bf['p_value'])}; SD {fmt(math.sqrt(v1))} "
-                   f"vs {fmt(math.sqrt(v2))}). Use Welch's t test instead.",
+            detail=f"The two groups differ in spread ({p_phrase(bf['p_value'])}; SD {fmt(row_a['sd'])} "
+                   f"vs {fmt(row_b['sd'])}). Use Welch's t test instead.",
         ))
     else:
         assumptions.append(AssumptionCheck(
@@ -324,11 +361,9 @@ def _independent_t(a: Iterable[Any], b: Iterable[Any], names: tuple[str, str], a
                   ci_high=ci_high, ci_level=level, statistic=t, p_value=p,
                   unit_note="Two-sided confidence interval" + (" (Welch-Satterthwaite df)." if welch else ".")),
     ]
-    for name, arr, mean, var in ((na, x, m1, v1), (nb, y, m2, v2)):
-        sem = math.sqrt(var / arr.size)
-        half = float(stats.t.ppf(0.5 + level / 2.0, arr.size - 1)) * sem
-        parameters.append(Parameter(name=f"Mean of {name}", value=mean, se=sem, ci_low=mean - half,
-                                    ci_high=mean + half, ci_level=level))
+    for name, row in ((na, row_a), (nb, row_b)):
+        parameters.append(Parameter(name=f"Mean of {name}", value=row["mean"], se=row["sem"],
+                                    ci_low=row["ci_low"], ci_high=row["ci_high"], ci_level=level))
 
     kind = "Welch's t test" if welch else "unpaired t test"
     by_kind = "By Welch's t test" if welch else "By the unpaired t test"
@@ -383,7 +418,7 @@ def _independent_t(a: Iterable[Any], b: Iterable[Any], names: tuple[str, str], a
         effect_sizes=[d, g],
         parameters=parameters,
         n={na: n1, nb: n2},
-        descriptives=[_row(na, x, level), _row(nb, y, level)],
+        descriptives=[row_a, row_b],
         warnings=warnings,
         data_notes=notes_a + notes_b,
         interpretation=interpretation,
@@ -391,7 +426,7 @@ def _independent_t(a: Iterable[Any], b: Iterable[Any], names: tuple[str, str], a
         citations=[_CITE_WELCH if welch else _CITE_STUDENT, _CITE_D, _CITE_G],
         extra={"mean_difference": diff, "se_difference": se_out,
                "variance_assumption": "unequal (Welch)" if welch else "equal (pooled)"},
-    )
+    ).finalize()
 
 
 def ttest_unpaired(a: Iterable[Any], b: Iterable[Any], *, names: tuple[str, str] = ("A", "B"),
@@ -426,7 +461,7 @@ def _pearson(x: np.ndarray, y: np.ndarray, level: float) -> dict[str, Any]:
     n = x.size
     if n < 3 or is_constant(x) or is_constant(y):
         return out
-    r = float(np.clip(np.corrcoef(x, y)[0, 1], -1.0, 1.0))
+    r = float(np.clip(np.corrcoef(rescale(x).arrays[0], rescale(y).arrays[0])[0, 1], -1.0, 1.0))
     out["r"] = r
     if abs(r) >= 1.0:
         out.update(p=0.0, p_positive=0.0 if r > 0 else 1.0, ci_low=r, ci_high=r)
@@ -441,29 +476,51 @@ def _pearson(x: np.ndarray, y: np.ndarray, level: float) -> dict[str, Any]:
 
 
 def _pairing_check(corr: dict[str, Any], label: str = "Pearson r") -> AssumptionCheck:
+    """Was pairing effective? One-tailed test of a *positive* correlation between pairs.
+
+    The P value stored with this check is one-tailed (H1: r > 0), because only a positive
+    correlation makes pairing worthwhile. The estimates table shows the two-sided P value
+    of the same correlation; the text names both so the two numbers are not confused.
+    """
     name = "Effective pairing (correlation between pairs)"
-    r, p1 = corr["r"], corr["p_positive"]
+    r, p1, p2 = corr["r"], corr["p_positive"], corr["p"]
     if r is None:
         return AssumptionCheck(name=name, status="warn",
                                detail="The correlation between the paired values could not be computed "
                                       "(too few pairs, or one column is constant).")
+    tails = f"one-tailed {p_phrase(p1)} for a positive correlation"
+    if p2 is not None:
+        tails += f"; two-tailed {p_phrase(p2)}, as shown with the estimate"
     if r > 0 and p1 is not None and p1 < 0.05:
         return AssumptionCheck(
             name=name, statistic=r, p_value=p1, status="pass",
-            detail=f"The paired values are positively correlated ({label} = {fmt(r, 3)}, one-tailed "
-                   f"{p_phrase(p1)}), so pairing was effective.",
+            detail=f"The paired values are positively correlated ({label} = {fmt(r, 3)}; {tails}), so "
+                   "pairing was effective.",
         )
     if r > 0:
         return AssumptionCheck(
             name=name, statistic=r, p_value=p1, status="info",
-            detail=f"The paired values are only weakly correlated ({label} = {fmt(r, 3)}, one-tailed "
-                   f"{p_phrase(p1)}); pairing gained little.",
+            detail=f"The paired values are only weakly correlated ({label} = {fmt(r, 3)}; {tails}); "
+                   "pairing gained little.",
         )
     return AssumptionCheck(
         name=name, statistic=r, p_value=p1, status="warn",
-        detail=f"The paired values are not positively correlated ({label} = {fmt(r, 3)}). Pairing did "
-               "not help here; check that the rows really are matched pairs.",
+        detail=f"The paired values are not positively correlated ({label} = {fmt(r, 3)}; {tails}). "
+               "Pairing did not help here; check that the rows really are matched pairs.",
     )
+
+
+def _paired_differences(x: np.ndarray, y: np.ndarray | float) -> tuple[np.ndarray, np.ndarray]:
+    """(d, tol): the differences x - y and the rounding tolerance of each one.
+
+    ``tol`` is a few units in the last place of the larger of abs(x) and abs(y), i.e. the
+    rounding error a difference inherits from the two values it was computed from.
+    """
+    with np.errstate(over="ignore"):
+        d = x - y
+    if not np.all(np.isfinite(d)):
+        raise StatsError(_TOO_LARGE)
+    return d, difference_tolerance(x, y)
 
 
 def ttest_paired(a: Iterable[Any], b: Iterable[Any], *, names: tuple[str, str] = ("A", "B"),
@@ -483,21 +540,32 @@ def ttest_paired(a: Iterable[Any], b: Iterable[Any], *, names: tuple[str, str] =
     if x.size < 2:
         raise StatsError(f"A paired t test needs at least 2 complete pairs; there are {x.size}.")
     n = int(x.size)
-    d = x - y
+    d, tol = _paired_differences(x, y)
     diff_name = f"Difference ({na} - {nb})"
-    md = float(d.mean())
-    sd = 0.0 if is_constant(d) else float(d.std(ddof=1))
-    se = sd / math.sqrt(n)
+    # "Every pair has the same difference" is judged at the rounding error of the ORIGINAL
+    # values: 100.1 - 100 and 1.1 - 1 differ in the 14th digit but are the same difference.
+    constant = differences_constant(d, tol)
+    rs = rescale(d)
+    dz = rs.arrays[0]
+    if constant:
+        md = float(snap_differences(d, tol)[int(np.argmin(tol))])
+        md_z = sd_z = 0.0
+    else:
+        md_z = float(dz.mean())
+        md = rs.location(md_z)
+        sd_z = float(dz.std(ddof=1))
+    se_z = sd_z / math.sqrt(n)
     df = float(n - 1)
     warnings: list[str] = []
     t: float | None
     p: float | None
-    if se > 0:
-        t = md / se
+    if se_z > 0:
+        zero_z = rs.to_scaled_location(0.0)
+        t = (md_z - zero_z) / se_z
         p = _t_p(t, df, alternative)
-        half = float(stats.t.ppf(0.5 + level / 2.0, df)) * se
-        ci_low, ci_high = md - half, md + half
-        se_out: float | None = se
+        half = float(stats.t.ppf(0.5 + level / 2.0, df)) * se_z
+        ci_low, ci_high = rs.location(md_z - half), rs.location(md_z + half)
+        se_out: float | None = rs.spread(se_z)
     else:
         t = p = ci_low = ci_high = se_out = None
         warnings.append(
@@ -572,7 +640,7 @@ def ttest_paired(a: Iterable[Any], b: Iterable[Any], *, names: tuple[str, str] =
                       f"({alternative_label(alternative)}, alpha = {alpha:g})."),
         citations=[_CITE_STUDENT, _CITE_D, _CITE_G],
         extra={"differences": [float(v) for v in d], "n_pairs": n, "pearson_r": corr["r"]},
-    )
+    ).finalize()
 
 
 def ttest_one_sample(x: Iterable[Any], popmean: float = 0.0, *, name: str = "Sample", alpha: float = 0.05,
@@ -590,21 +658,34 @@ def ttest_one_sample(x: Iterable[Any], popmean: float = 0.0, *, name: str = "Sam
     arr, notes = clean(x, name)
     require_n(arr, 2, name, "a one-sample t test")
     n = int(arr.size)
-    mean = float(arr.mean())
-    sd = 0.0 if is_constant(arr) else float(arr.std(ddof=1))
-    se = sd / math.sqrt(n)
+    row = _row(name, arr, level)
+    mean = row["mean"]
+    rs = rescale(arr)
+    z = rs.arrays[0]
+    mean_z = float(z.mean())
+    mu_z = rs.to_scaled_location(mu)
+    if not math.isfinite(mu_z):
+        raise StatsError("The hypothetical value is too far from the data (by more than 300 orders of "
+                         "magnitude) for the difference to be computed.")
+    sd_z = 0.0 if is_constant(arr) else float(z.std(ddof=1))
+    se_z = sd_z / math.sqrt(n)
     df = float(n - 1)
-    diff = mean - mu
+    with np.errstate(over="ignore"):
+        diff = float(np.float64(mean) - np.float64(mu))
+    if not math.isfinite(diff):
+        raise StatsError(_TOO_LARGE)
     warnings: list[str] = []
     t: float | None
     p: float | None
-    if se > 0:
-        t = diff / se
+    if se_z > 0:
+        t = (mean_z - mu_z) / se_z
         p = _t_p(t, df, alternative)
-        half = float(stats.t.ppf(0.5 + level / 2.0, df)) * se
-        se_out: float | None = se
+        half = rs.spread(float(stats.t.ppf(0.5 + level / 2.0, df)) * se_z)
+        se_out: float | None = rs.spread(se_z)
         mean_ci = (mean - half, mean + half)
         diff_ci = (diff - half, diff + half)
+        if not all(math.isfinite(v) for v in (*mean_ci, *diff_ci)):
+            raise StatsError(_TOO_LARGE)
     else:
         t = p = se_out = None
         mean_ci = diff_ci = (None, None)
@@ -662,7 +743,7 @@ def ttest_one_sample(x: Iterable[Any], popmean: float = 0.0, *, name: str = "Sam
         effect_sizes=[d, g],
         parameters=parameters,
         n={name: n},
-        descriptives=[_row(name, arr, level)],
+        descriptives=[row],
         warnings=warnings,
         data_notes=notes,
         interpretation=interpretation,
@@ -670,7 +751,7 @@ def ttest_one_sample(x: Iterable[Any], popmean: float = 0.0, *, name: str = "Sam
                       f"t test ({alternative_label(alternative)}, alpha = {alpha:g})."),
         citations=[_CITE_STUDENT, _CITE_D, _CITE_G],
         extra={"hypothetical_value": mu},
-    )
+    ).finalize()
 
 
 # ================================================================== Mann-Whitney
@@ -713,6 +794,70 @@ def signed_rank_null_pmf(ranks: Iterable[int]) -> np.ndarray:
         shifted[r:] = counts[: total + 1 - r]
         counts = counts + shifted
     return counts / counts.sum()
+
+
+def rank_sum_null_pmf(weights: Iterable[int], n1: int) -> np.ndarray:
+    """Exact permutation distribution of the sum of ``n1`` of the integer ``weights``.
+
+    Every choice of ``n1`` of the N weights is equally likely under the null hypothesis
+    (this is the conditional distribution of the rank sum given the observed pattern of
+    ties when the weights are the mid-ranks, doubled so that they are integers).
+    ``pmf[s] = P(sum = s)`` for s = 0 .. sum of all weights; subsets are counted by
+    dynamic programming over (subset size, sum).
+    """
+    w = [int(v) for v in weights]
+    if n1 < 1 or n1 > len(w):
+        raise ValueError("n1 must be between 1 and the number of weights.")
+    max_sum = int(sum(sorted(w)[-n1:]))
+    counts = np.zeros((n1 + 1, max_sum + 1))
+    counts[0, 0] = 1.0
+    for seen, weight in enumerate(w, start=1):
+        for size in range(min(seen, n1), 0, -1):
+            if weight <= max_sum:
+                counts[size, weight:] += counts[size - 1, : max_sum + 1 - weight]
+    pmf = counts[n1]
+    return pmf / pmf.sum()
+
+
+def _attainable_min_p(pmf: np.ndarray, alternative: str) -> float:
+    """Smallest P value the exact test with null distribution ``pmf`` can produce."""
+    support = np.nonzero(pmf > 0)[0]
+    low, high = float(pmf[support[0]]), float(pmf[support[-1]])
+    if alternative == "greater":
+        return high
+    if alternative == "less":
+        return low
+    return min(1.0, 2.0 * min(low, high))
+
+
+def _p_kind(use_exact: bool, has_ties: bool) -> str:
+    if not use_exact:
+        return "approximate"
+    return "exact (permutation distribution of the tied ranks)" if has_ties else "exact"
+
+
+def _p_methods_phrase(use_exact: bool, has_ties: bool) -> str:
+    if not use_exact:
+        return "normal approximation with tie and continuity correction"
+    return "exact permutation P value for the tied ranks" if has_ties else "exact P value"
+
+
+def _tails_word(alternative: str) -> str:
+    return "two-tailed" if alternative == "two-sided" else "one-tailed"
+
+
+_P_ASYMPTOTIC = "asymptotic (normal approximation with tie correction and continuity correction)"
+_P_EXACT_TIES = "exact (permutation distribution of the tied mid-ranks)"
+_P_FLOORED = (_P_ASYMPTOTIC[:-1] + "; raised to the smallest P value the exact test can attain)")
+
+
+def _safe_diff(a: float, b: float) -> float:
+    """a - b, or a StatsError when the difference exceeds the largest representable number."""
+    with np.errstate(over="ignore"):
+        out = float(np.float64(a) - np.float64(b))
+    if not math.isfinite(out):
+        raise StatsError(_TOO_LARGE)
+    return out
 
 
 def _exact_tail_p(pmf: np.ndarray, observed: float, alternative: str) -> float:
@@ -782,9 +927,12 @@ def mann_whitney(a: Iterable[Any], b: Iterable[Any], *, names: tuple[str, str] =
       (a, b) pairs with a > b, ties counting 1/2), ``u_b`` = n_a n_b - u_a, the rank sums
       and the mean ranks.
     * P value: exact (``method="exact"``, the default choice of ``"auto"`` when there are
-      no ties and both groups have at most 50 values) or the normal approximation with tie
-      correction and continuity correction (``"asymptotic"``). ``extra["p_method"]`` says
-      which was used.
+      no ties and both groups have at most 50 values, or when there are ties and both
+      groups have at most 7 values: then the permutation distribution of the tied
+      mid-ranks is enumerated) or the normal approximation with tie correction and
+      continuity correction (``"asymptotic"``; never reported below the smallest P value
+      the exact test can attain). ``extra["p_method"]`` says which was used and
+      ``extra["smallest_attainable_p"]`` gives that smallest value.
     * Location shift: the Hodges-Lehmann estimator (median of all n_a * n_b pairwise
       differences a_i - b_j) with a distribution-free CI from the order statistics of those
       differences (exact without ties, otherwise a normal approximation for the ranks).
@@ -822,42 +970,67 @@ def mann_whitney(a: Iterable[Any], b: Iterable[Any], *, names: tuple[str, str] =
     sd_u = math.sqrt(var_u) if var_u > 0 else 0.0
 
     warnings: list[str] = []
-    can_exact = (not has_ties) and max(n1, n2) <= EXACT_MAX_N
+    # Exact P values: without ties up to EXACT_MAX_N per group (tabulated null distribution);
+    # with ties, the permutation distribution of the mid-ranks for very small samples.
+    ties_exact = has_ties and sd_u > 0 and max(n1, n2) <= EXACT_TIES_MAX_N
+    can_exact = ((not has_ties) and max(n1, n2) <= EXACT_MAX_N) or ties_exact
     use_exact = can_exact and method in {"auto", "exact"}
-    if method == "exact" and not can_exact:
+    if method == "exact" and not can_exact and sd_u > 0:
         warnings.append(
             "An exact P value was requested but is not available "
-            + ("because there are tied values" if has_ties else f"for groups larger than {EXACT_MAX_N}")
+            + (f"because there are tied values in groups larger than {EXACT_TIES_MAX_N}" if has_ties
+               else f"for groups larger than {EXACT_MAX_N}")
             + "; the normal approximation was used instead."
         )
+    # smallest P value any arrangement of N values into these two groups can give
+    tails = 2.0 if alternative == "two-sided" else 1.0
+    log_min = math.log(tails) - (math.lgamma(total + 1) - math.lgamma(n1 + 1) - math.lgamma(n2 + 1))
+    min_p = min(1.0, tails / math.comb(total, n1)) if total <= 60 else min(1.0, math.exp(log_min))
     pmf: np.ndarray | None = None
     z: float | None = None
     p: float | None
-    if use_exact:
-        pmf = mann_whitney_null_pmf(n1, n2)
-        p = _exact_tail_p(pmf, u_a, alternative)
-        p_method = "exact"
-    elif sd_u > 0:
-        z, p = _normal_tail_p(u_a, mean_u, sd_u, alternative)
-        p_method = "asymptotic (normal approximation with tie correction and continuity correction)"
-    else:
+    if sd_u <= 0:
         p = 1.0
         p_method = "all values identical"
+        use_exact = False
+        min_p = 1.0
         warnings.append(
             "Every value in both groups is identical, so the groups cannot be told apart (P = 1)."
         )
+    elif use_exact and not has_ties:
+        pmf = mann_whitney_null_pmf(n1, n2)
+        p = _exact_tail_p(pmf, u_a, alternative)
+        p_method = "exact"
+    elif use_exact:
+        doubled = np.rint(2.0 * ranks).astype(int)
+        tied_pmf = rank_sum_null_pmf(doubled, n1)
+        p = _exact_tail_p(tied_pmf, float(doubled[:n1].sum()), alternative)
+        min_p = _attainable_min_p(tied_pmf, alternative)
+        p_method = _P_EXACT_TIES
+    else:
+        z, p = _normal_tail_p(u_a, mean_u, sd_u, alternative)
+        p_method = _P_ASYMPTOTIC
+        if p < min_p:  # the approximation cannot be more extreme than the exact test allows
+            p, p_method = min_p, _P_FLOORED
     if has_ties and sd_u > 0:
         n_tied = int(tie_counts[tie_counts > 1].sum())
+        if use_exact:
+            warnings.append(
+                f"There are tied values ({n_tied} of {total} values share a value with another). The P "
+                "value is exact for these tied ranks: it comes from the permutation distribution of "
+                "the mid-ranks (every way of dividing the pooled values into two groups of these "
+                "sizes), not from the normal approximation."
+            )
+        else:
+            warnings.append(
+                f"There are tied values ({n_tied} of {total} values share a value with another), so "
+                "the tabulated exact distribution does not apply; the normal approximation with tie "
+                "correction was used."
+                + (" With samples this small the approximation can be rough." if min(n1, n2) < 8 else "")
+            )
+    if min_p > alpha and sd_u > 0:
         warnings.append(
-            f"There are tied values ({n_tied} of {total} values share a value with another), so an "
-            "exact P value is not available; the normal approximation with tie correction was used."
-            + (" With samples this small the approximation can be rough." if min(n1, n2) < 8 else "")
-        )
-    # smallest attainable exact two-sided P value, 2 / C(N, n1); only relevant for tiny samples
-    min_p = 2.0 / math.comb(total, n1) if total <= 60 else 0.0
-    if alternative == "two-sided" and min_p > alpha:
-        warnings.append(
-            f"With {n1} and {n2} values the smallest possible two-tailed exact P value is "
+            f"With {n1} and {n2} values the smallest possible {_tails_word(alternative)} P value is "
             f"{fmt(min_p, 3)}, so this test can never reach significance at alpha = {alpha:g}."
         )
     warnings.extend(_one_sided_note(alternative, level))
@@ -867,8 +1040,10 @@ def mann_whitney(a: Iterable[Any], b: Iterable[Any], *, names: tuple[str, str] =
     hl_low = hl_high = achieved = None
     ci_method = None
     if n_pairs <= _MAX_PAIRS:
-        diffs = np.sort(np.subtract.outer(x, y).ravel())
-        hl = float(np.median(diffs))
+        # scaled by a common power of two (exact), so a_i - b_j cannot overflow
+        scaled, exponent = pow2_scaled(pooled)
+        diffs = np.sort(np.subtract.outer(scaled[:n1], scaled[n1:]).ravel())
+        hl = pow2_back(float(np.median(diffs)), exponent)
         hl_low, hl_high, achieved, ci_method = _order_stat_ci(
             diffs, pmf, mean_u, math.sqrt(n_pairs * (total + 1.0) / 12.0), level
         )
@@ -877,6 +1052,8 @@ def mann_whitney(a: Iterable[Any], b: Iterable[Any], *, names: tuple[str, str] =
                 f"The samples are too small for a {level * 100:g}% confidence interval of the "
                 "Hodges-Lehmann difference."
             )
+        else:
+            hl_low, hl_high = pow2_back(hl_low, exponent), pow2_back(hl_high, exponent)
     else:
         warnings.append("The groups are too large to compute the Hodges-Lehmann estimate "
                         f"(more than {_MAX_PAIRS:,} pairs).")
@@ -912,7 +1089,7 @@ def mann_whitney(a: Iterable[Any], b: Iterable[Any], *, names: tuple[str, str] =
                   ci_level=level,
                   unit_note="Median of all pairwise differences; " + (f"CI: {ci_method}" if ci_method else "no CI")
                             + (f" (actual coverage {achieved * 100:.2f}%)." if achieved is not None else ".")),
-        Parameter(name=f"Difference between medians ({na} - {nb})", value=med_a - med_b,
+        Parameter(name=f"Difference between medians ({na} - {nb})", value=_safe_diff(med_a, med_b),
                   unit_note="Shown for reference; it has no confidence interval and is not what the test examines."),
     ]
     mean_rank_a, mean_rank_b = r1 / n1, r2 / n2
@@ -926,7 +1103,7 @@ def mann_whitney(a: Iterable[Any], b: Iterable[Any], *, names: tuple[str, str] =
         f"By the Mann-Whitney test{_tail_text(alternative, na, nb)}, {tendency} (median {fmt(med_a)} vs "
         f"{fmt(med_b)}; mean rank {fmt(mean_rank_a)} vs {fmt(mean_rank_b)}; n = {n1} and {n2}); the "
         f"difference between the two distributions is {sig_phrase(p, alpha)}; U = {fmt(u)}, "
-        f"{'exact' if use_exact else 'approximate'} P value. "
+        f"{_p_kind(use_exact, has_ties)} P value. "
     )
     if hl is not None:
         interpretation += f"The Hodges-Lehmann estimate of the shift {na} - {nb} is {fmt(hl)}"
@@ -963,33 +1140,41 @@ def mann_whitney(a: Iterable[Any], b: Iterable[Any], *, names: tuple[str, str] =
         interpretation=interpretation,
         methods_text=(
             f"The two groups were compared with the Mann-Whitney U test ({alternative_label(alternative)}, "
-            f"alpha = {alpha:g}; {'exact P value' if use_exact else 'normal approximation with tie and continuity correction'}); "
+            f"alpha = {alpha:g}; {_p_methods_phrase(use_exact, has_ties)}); "
             "the shift was estimated with the Hodges-Lehmann estimator."
         ),
-        citations=[_CITE_MWU, _CITE_HL, _CITE_BAUER, _CITE_RB],
+        citations=[_CITE_MWU, _CITE_HL, _CITE_BAUER, _CITE_RB, _CITE_NEWCOMBE],
         extra={
             "u_a": u_a, "u_b": u_b, "u_min": u, "statistic_reported": "U = smaller of U_A and U_B",
             "rank_sum_a": r1, "rank_sum_b": r2, "mean_rank_a": mean_rank_a, "mean_rank_b": mean_rank_b,
             "z": z, "p_method": p_method, "exact": bool(use_exact), "ties": has_ties,
             "probability_of_superiority": u_a / n_pairs,
+            "smallest_attainable_p": min_p,
             "hodges_lehmann_ci_method": ci_method, "hodges_lehmann_ci_coverage": achieved,
         },
-    )
+    ).finalize()
 
 
 # ============================================================ Wilcoxon signed-rank
 
 
-def _signed_rank_result(
-    d: np.ndarray, *, analysis: str, test_name: str, why: str, label: str, estimate_name: str,
-    estimate_offset: float, alpha: float, alternative: str, level: float, zero_method: str, method: str,
-    tail_names: tuple[str, str], n_label: dict[str, int], rows: list[dict[str, Any]], notes: list[str],
-    assumptions: list[AssumptionCheck], parameters_extra: list[Parameter], methods_prefix: str,
-    extra_more: dict[str, Any],
-) -> StatResult:
-    """Shared engine of the paired and one-sample Wilcoxon signed-rank tests.
+def _signed_rank_core(d: np.ndarray, *, zero_method: str = "wilcox", method: str = "auto",
+                      alternative: str = "two-sided") -> dict[str, Any]:
+    """Statistic and P value of the Wilcoxon signed-rank test for differences ``d``.
 
-    ``d`` are the differences (a - b, or x - hypothetical median).
+    This is the single engine behind :func:`wilcoxon_signed_rank`,
+    :func:`wilcoxon_one_sample` and the Wilcoxon comparisons after the Friedman test
+    (``posthoc.friedman_posthoc``), so all of them give identical P values.
+
+    ``d`` must already be free of rounding noise (see ``snap_differences``): exact zeros
+    are zero differences and exactly equal absolute values are ties.
+
+    P value: exact when no two non-zero differences are tied and there are at most
+    ``EXACT_MAX_N`` of them (null distribution of W+ over all sign patterns); exact also
+    with ties when there are at most ``EXACT_TIES_MAX_N`` non-zero differences (the same
+    enumeration over the tied mid-ranks); otherwise the normal approximation with tie
+    correction and continuity correction, never reported below the smallest attainable
+    P value 2 / 2^n (1 / 2^n one-tailed).
     """
     if zero_method not in {"wilcox", "pratt"}:
         raise StatsError("zero_method must be 'wilcox' (discard zero differences) or 'pratt'.")
@@ -1006,7 +1191,6 @@ def _signed_rank_result(
         ranks = stats.rankdata(np.abs(d))[nonzero]
     w_plus = float(ranks[dn > 0].sum())
     w_minus = float(ranks[dn < 0].sum())
-    w = w_plus - w_minus
     _, tie_counts = np.unique(np.abs(dn), return_counts=True)
     has_ties = bool(np.any(tie_counts > 1))
     tie_term = float(np.sum(tie_counts.astype(float) ** 3 - tie_counts))
@@ -1019,54 +1203,103 @@ def _signed_rank_result(
             - tie_term / 48.0
     sd_w = math.sqrt(var_w) if var_w > 0 else 0.0
 
-    warnings: list[str] = []
-    can_exact = n_r >= 1 and not has_ties and n_r <= EXACT_MAX_N
+    ties_exact = has_ties and 1 <= n_r <= EXACT_TIES_MAX_N
+    can_exact = n_r >= 1 and ((not has_ties and n_r <= EXACT_MAX_N) or ties_exact)
     use_exact = can_exact and method in {"auto", "exact"}
-    if method == "exact" and not can_exact and n_r >= 1:
-        warnings.append(
-            "An exact P value was requested but is not available "
-            + ("because some differences are tied in size" if has_ties
-               else f"for more than {EXACT_MAX_N} non-zero differences")
-            + "; the normal approximation was used instead."
-        )
+    tails = 2.0 if alternative == "two-sided" else 1.0
+    min_p = min(1.0, tails * 0.5 ** n_r) if n_r else None
     pmf: np.ndarray | None = None
     z: float | None = None
     p: float | None
-    statistic: float | None = w
     if n_r == 0:
         p = None
-        statistic = None
         p_method = "not computed"
+    elif use_exact:
+        if has_ties:  # mid-ranks are multiples of 1/2: enumerate on doubled (integer) ranks
+            pmf = signed_rank_null_pmf(np.rint(2.0 * ranks).astype(int))
+            p = _exact_tail_p(pmf, 2.0 * w_plus, alternative)
+            p_method = _P_EXACT_TIES
+        else:
+            pmf = signed_rank_null_pmf(np.rint(ranks).astype(int))
+            p = _exact_tail_p(pmf, w_plus, alternative)
+            p_method = "exact"
+        if n_zero and zero_method == "wilcox":
+            p_method += " (zero differences discarded)"
+        elif n_zero:
+            p_method += " (conditional on the ranks of the non-zero differences, Pratt's method)"
+    else:
+        z, p = _normal_tail_p(w_plus, mean_w, sd_w, alternative)
+        p_method = _P_ASYMPTOTIC
+        if p < min_p:  # the approximation cannot be more extreme than the exact test allows
+            p, p_method = min_p, _P_FLOORED
+    return {
+        "n_all": n_all, "n_zero": n_zero, "n_nonzero": n_r, "w_plus": w_plus, "w_minus": w_minus,
+        "w": w_plus - w_minus, "has_ties": has_ties, "can_exact": can_exact, "use_exact": bool(use_exact),
+        "p": p, "z": z, "p_method": p_method, "min_p": min_p,
+        "pmf": pmf if (use_exact and not has_ties) else None,
+    }
+
+
+def _signed_rank_result(
+    d: np.ndarray, *, tol: np.ndarray, analysis: str, test_name: str, why: str, label: str, estimate_name: str,
+    estimate_offset: float, alpha: float, alternative: str, level: float, zero_method: str, method: str,
+    tail_names: tuple[str, str], n_label: dict[str, int], rows: list[dict[str, Any]], notes: list[str],
+    assumptions: list[AssumptionCheck], parameters_extra: list[Parameter], methods_prefix: str,
+    extra_more: dict[str, Any],
+) -> StatResult:
+    """Shared engine of the paired and one-sample Wilcoxon signed-rank tests.
+
+    ``d`` are the differences (a - b, or x - hypothetical median) and ``tol`` their
+    rounding tolerances (a few units in the last place of the values they were computed
+    from). Differences within tolerance of zero count as zero and absolute differences
+    within tolerance of each other count as ties, so that floating-point noise such as
+    5.4 - 5.1 != 5.2 - 4.9 is not ranked as if it were data.
+    """
+    raw = d
+    d = snap_differences(raw, tol)
+    core = _signed_rank_core(d, zero_method=zero_method, method=method, alternative=alternative)
+    n_all, n_zero, n_r = core["n_all"], core["n_zero"], core["n_nonzero"]
+    w_plus, w_minus, w = core["w_plus"], core["w_minus"], core["w"]
+    has_ties, use_exact = core["has_ties"], core["use_exact"]
+    p, z, p_method, pmf, min_p = core["p"], core["z"], core["p_method"], core["pmf"], core["min_p"]
+
+    warnings: list[str] = []
+    if method == "exact" and not core["can_exact"] and n_r >= 1:
+        warnings.append(
+            "An exact P value was requested but is not available "
+            + (f"because some differences are tied in size and there are more than {EXACT_TIES_MAX_N} "
+               "of them" if has_ties else f"for more than {EXACT_MAX_N} non-zero differences")
+            + "; the normal approximation was used instead."
+        )
+    statistic: float | None = w
+    if n_r == 0:
+        statistic = None
         warnings.append(
             "Every difference is exactly zero, so there is nothing to rank and the test cannot be computed."
         )
-    elif use_exact:
-        pmf = signed_rank_null_pmf(np.rint(ranks).astype(int))
-        p = _exact_tail_p(pmf, w_plus, alternative)
-        p_method = "exact"
-        if n_zero and zero_method == "wilcox":
-            p_method = "exact (zero differences discarded)"
-        elif n_zero:
-            p_method = "exact (conditional on the ranks of the non-zero differences, Pratt's method)"
-    else:
-        z, p = _normal_tail_p(w_plus, mean_w, sd_w, alternative)
-        p_method = "asymptotic (normal approximation with tie correction and continuity correction)"
     if has_ties and n_r:
-        warnings.append(
-            "Some differences are tied in size, so an exact P value is not available; the normal "
-            "approximation with tie correction was used."
-            + (" With so few pairs the approximation can be rough." if n_r < 10 else "")
-        )
+        if use_exact:
+            warnings.append(
+                "Some differences are tied in size. The P value is exact for these tied ranks: it comes "
+                f"from the distribution of the mid-ranks over all {2 ** n_r} possible patterns of signs, "
+                "not from the normal approximation."
+            )
+        else:
+            warnings.append(
+                "Some differences are tied in size, so the tabulated exact distribution does not apply; "
+                "the normal approximation with tie correction was used."
+                + (" With so few pairs the approximation can be rough." if n_r < 10 else "")
+            )
     if n_zero and n_r:
         warnings.append(
             f"{n_zero} difference(s) are exactly zero. "
             + ("They were discarded before ranking (Wilcoxon's method)." if zero_method == "wilcox"
                else "They were ranked with the others and their ranks then dropped (Pratt's method).")
         )
-    if 0 < n_r < 6 and alternative == "two-sided":
+    if min_p is not None and min_p > alpha:
         warnings.append(
-            f"With only {n_r} non-zero difference(s) the smallest possible two-tailed exact P value is "
-            f"{fmt(2.0 / 2 ** n_r, 3)}; the test cannot reach significance at alpha = 0.05."
+            f"With only {n_r} non-zero difference(s) the smallest possible {_tails_word(alternative)} P "
+            f"value is {fmt(min_p, 3)}; the test cannot reach significance at alpha = {alpha:g}."
         )
     warnings.extend(_one_sided_note(alternative, level))
 
@@ -1076,7 +1309,7 @@ def _signed_rank_result(
     n_walsh = n_all * (n_all + 1) // 2
     if n_walsh <= _MAX_PAIRS:
         i, j = np.triu_indices(n_all)
-        walsh = np.sort((d[i] + d[j]) / 2.0)
+        walsh = np.sort(d[i] / 2.0 + d[j] / 2.0)  # halves first: the sum itself could overflow
         hl = float(np.median(walsh))
         ci_pmf = None
         if n_zero == 0 and not has_ties and n_all <= EXACT_MAX_N:
@@ -1096,7 +1329,7 @@ def _signed_rank_result(
         warnings.append("There are too many values to compute the Hodges-Lehmann estimate.")
 
     rb = _tidy(es.rank_biserial_paired(d, level=level))
-    skew = _describe_clean(d, level)["skewness"] if n_all else None
+    skew = _describe_clean(raw, level)["skewness"] if n_all else None
     sym_detail = (
         "The test assumes the differences are distributed symmetrically around their median. "
         "This cannot be verified from a small sample"
@@ -1135,7 +1368,7 @@ def _signed_rank_result(
             f"By the {label}{_tail_text(alternative, first, second)}, {tendency} "
             f"(sum of positive ranks {fmt(w_plus)}, sum of negative ranks {fmt(w_minus)}, "
             f"{n_r} non-zero differences); this is {sig_phrase(p, alpha)}; W = {fmt(w)}, "
-            f"{'exact' if use_exact else 'approximate'} P value. "
+            f"{_p_kind(use_exact, has_ties)} P value. "
         )
         if shift is not None:
             interpretation += f"{estimate_name}: {fmt(shift)}"
@@ -1144,7 +1377,7 @@ def _signed_rank_result(
                 if hl_low is not None else ". "
             )
         interpretation += _effect_sentence(rb)
-    citations = [_CITE_WILCOXON, _CITE_HL, _CITE_BAUER, _CITE_RB]
+    citations = [_CITE_WILCOXON, _CITE_HL, _CITE_BAUER, _CITE_RB, _CITE_NEWCOMBE]
     if zero_method == "pratt":
         citations.insert(1, _CITE_PRATT)
     return StatResult(
@@ -1167,7 +1400,7 @@ def _signed_rank_result(
         interpretation=interpretation,
         methods_text=(
             methods_prefix
-            + ("; exact P value" if use_exact else "; normal approximation with tie and continuity correction")
+            + "; " + _p_methods_phrase(use_exact, has_ties)
             + ("; zero differences discarded)." if zero_method == "wilcox"
                else "; zero differences handled by Pratt's method).")
         ),
@@ -1176,11 +1409,11 @@ def _signed_rank_result(
             "w_plus": w_plus, "w_minus": w_minus, "w": w, "t_min": min(w_plus, w_minus),
             "statistic_reported": "W = sum of signed ranks (W+ minus W-)",
             "n_nonzero": n_r, "n_zero": n_zero, "z": z, "p_method": p_method, "exact": bool(use_exact),
-            "ties": has_ties, "zero_method": zero_method,
+            "ties": has_ties, "zero_method": zero_method, "smallest_attainable_p": min_p,
             "hodges_lehmann_ci_method": ci_method, "hodges_lehmann_ci_coverage": achieved,
             **extra_more,
         },
-    )
+    ).finalize()
 
 
 def _spearman(x: np.ndarray, y: np.ndarray) -> dict[str, Any]:
@@ -1210,8 +1443,12 @@ def wilcoxon_signed_rank(a: Iterable[Any], b: Iterable[Any], *, names: tuple[str
     * ``zero_method``: ``"wilcox"`` (default) discards pairs whose difference is exactly
       zero; ``"pratt"`` ranks them with the others and then drops their ranks (Pratt 1959).
     * P value: exact when no two non-zero differences have the same size and there are at
-      most 50 of them; otherwise the normal approximation with tie correction and
-      continuity correction. ``extra["p_method"]`` says which.
+      most 50 of them; exact also with tied differences when there are at most 7 non-zero
+      differences (enumeration of the tied mid-ranks over all sign patterns); otherwise
+      the normal approximation with tie correction and continuity correction (never
+      reported below the smallest attainable value 2 / 2^n). ``extra["p_method"]`` says
+      which. Differences are compared with a tolerance of a few units in the last place
+      of the original values, so 5.4 - 5.1 and 5.2 - 4.9 count as tied.
     * Estimate: the Hodges-Lehmann pseudo-median of the differences (median of all Walsh
       averages (d_i + d_j) / 2, i <= j, using every pair including zero differences) with a
       distribution-free CI (exact without ties or zeros, else normal approximation).
@@ -1224,12 +1461,12 @@ def wilcoxon_signed_rank(a: Iterable[Any], b: Iterable[Any], *, names: tuple[str
     x, y, notes = clean_paired(a, b, (na, nb))
     if x.size < 2:
         raise StatsError(f"The Wilcoxon signed-rank test needs at least 2 complete pairs; there are {x.size}.")
-    d = x - y
+    d, tol = _paired_differences(x, y)
     n = int(x.size)
     diff_name = f"Difference ({na} - {nb})"
     corr = _spearman(x, y)
     return _signed_rank_result(
-        d,
+        d, tol=tol,
         analysis="wilcoxon_signed_rank",
         test_name="Wilcoxon matched-pairs signed-rank test",
         why="The Wilcoxon matched-pairs signed-rank test compares two measurements on the same subjects "
@@ -1245,7 +1482,7 @@ def wilcoxon_signed_rank(a: Iterable[Any], b: Iterable[Any], *, names: tuple[str
         notes=notes,
         assumptions=[_pairing_check(corr, "Spearman r"), _INDEPENDENT_PAIRS],
         parameters_extra=[
-            Parameter(name="Median of differences", value=float(np.median(d)),
+            Parameter(name="Median of differences", value=_describe_clean(d, level)["median"],
                       unit_note="Plain sample median of the differences, for reference."),
             Parameter(name="Correlation between pairs (Spearman r)", value=corr["r"], p_value=corr["p"],
                       unit_note="Two-sided P value (t approximation)."),
@@ -1273,10 +1510,10 @@ def wilcoxon_one_sample(x: Iterable[Any], hypothetical_median: float = 0.0, *, n
     name = str(name)
     arr, notes = clean(x, name)
     require_n(arr, 2, name, "the Wilcoxon signed-rank test")
-    d = arr - m0
-    median = float(np.median(arr))
+    d, tol = _paired_differences(arr, m0)
+    median = _describe_clean(arr, level)["median"]
     return _signed_rank_result(
-        d,
+        d, tol=tol,
         analysis="wilcoxon_one_sample",
         test_name="Wilcoxon signed-rank test (one sample)",
         why="The one-sample Wilcoxon signed-rank test compares the median of one group with a fixed "
@@ -1294,7 +1531,7 @@ def wilcoxon_one_sample(x: Iterable[Any], hypothetical_median: float = 0.0, *, n
         parameters_extra=[
             Parameter(name=f"Median of {name}", value=median,
                       unit_note="Plain sample median, for reference."),
-            Parameter(name="Median minus hypothetical value", value=median - m0),
+            Parameter(name="Median minus hypothetical value", value=_safe_diff(median, m0)),
         ],
         methods_prefix=(f"The median was compared with the hypothetical value {fmt(m0)} using the Wilcoxon "
                         f"signed-rank test ({alternative_label(alternative)}, alpha = {alpha:g}"),

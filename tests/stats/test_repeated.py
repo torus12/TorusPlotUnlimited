@@ -37,13 +37,40 @@ def run(monkeypatch):
     return registry.run_analysis
 
 
-# Field A, Discovering Statistics: "bushtucker trial" example. Time to retch (seconds) for
-# 8 celebrities eating 4 foods (stick insect, kangaroo testicle, fish eye, witchetty grub).
-FIELD = np.array([
-    (8, 7, 1, 6), (9, 5, 2, 5), (6, 2, 3, 8), (5, 3, 1, 9),
-    (8, 4, 5, 8), (7, 5, 6, 7), (10, 2, 7, 2), (12, 6, 8, 1),
+# Constructed (synthetic) data: 8 subjects x 4 conditions, chosen so that sphericity is clearly
+# violated and the correction matters (uncorrected P < .05, Greenhouse-Geisser P > .05,
+# Huynh-Feldt P < .05). Expected values are derived independently in the tests below.
+RM_DATA = np.array([
+    (1, 12, 12, 12), (4, 5, 6, 8), (4, 7, 6, 10), (5, 12, 11, 5),
+    (1, 4, 5, 7), (12, 10, 11, 10), (6, 9, 8, 2), (3, 12, 11, 2),
 ], dtype=float)
-FOODS = ["Stick insect", "Kangaroo testicle", "Fish eye", "Witchetty grub"]
+CONDS = ["Condition A", "Condition B", "Condition C", "Condition D"]
+
+
+def _reference_rm(y):
+    """Independent one-way repeated-measures quantities from their textbook definitions."""
+    n, k = y.shape
+    grand = y.mean()
+    ss_cond = n * ((y.mean(axis=0) - grand) ** 2).sum()
+    ss_subj = k * ((y.mean(axis=1) - grand) ** 2).sum()
+    ss_err = ((y - grand) ** 2).sum() - ss_cond - ss_subj
+    df1, df2 = k - 1, (k - 1) * (n - 1)
+    f = (ss_cond / df1) / (ss_err / df2)
+    # orthonormal Helmert contrasts -> covariance of the contrast scores
+    c = np.zeros((k, k - 1))
+    for j in range(1, k):
+        c[:j, j - 1] = 1.0
+        c[j, j - 1] = -j
+        c[:, j - 1] /= np.linalg.norm(c[:, j - 1])
+    s = np.cov(y @ c, rowvar=False)
+    q = k - 1
+    w = np.linalg.det(s) / (np.trace(s) / q) ** q
+    chi2 = -((n - 1) - (2 * q * q + q + 2) / (6 * q)) * np.log(w)
+    eps_gg = np.trace(s) ** 2 / (q * np.trace(s @ s))
+    eps_hf = min(1.0, (n * q * eps_gg - 2) / (q * (n - 1 - q * eps_gg)))
+    return {"f": f, "df1": df1, "df2": df2, "p": stats.f.sf(f, df1, df2), "w": w, "chi2": chi2,
+            "chi2_df": q * (q + 1) // 2 - 1, "eps_gg": eps_gg, "eps_hf": eps_hf,
+            "p_gg": stats.f.sf(f, df1 * eps_gg, df2 * eps_gg), "p_hf": stats.f.sf(f, df1 * eps_hf, df2 * eps_hf)}
 
 
 def table_row(result, source):
@@ -91,36 +118,39 @@ def wide_from_long(frame):
 
 
 # =============================================================================
-# Published worked example
+# Reference values derived from first principles (constructed data)
 # =============================================================================
-def test_published_field_bushtucker_example():
-    r = rp.anova_rm_oneway(FIELD, FOODS, correction="none", posthoc="none")
+def test_rm_anova_matches_first_principles_and_statsmodels():
+    ref = _reference_rm(RM_DATA)
+    r = rp.anova_rm_oneway(RM_DATA, CONDS, correction="none", posthoc="none")
     row = table_row(r, "Condition")
-    # F(3, 21) = 3.79, p = .026 (sphericity assumed)
     assert (row["df"], row["df_error"]) == (3, 21)
-    assert row["f"] == pytest.approx(3.79, abs=0.005)
-    assert row["p"] == pytest.approx(0.026, abs=0.0005)
+    assert row["f"] == pytest.approx(ref["f"], rel=1e-10)
+    assert row["p"] == pytest.approx(ref["p"], rel=1e-8)
     assert r.p_value == row["p"] and (r.df, r.df2) == (3, 21)
-    # Mauchly: W = .136, chi-square(5) = 11.41, p = .047
+    from statsmodels.stats.anova import AnovaRM
+
+    sm = AnovaRM(long_from_matrix(RM_DATA, CONDS), "y", "subject", within=["cond"]).fit().anova_table
+    assert row["f"] == pytest.approx(float(sm["F Value"].iloc[0]), rel=1e-10)
+    # Mauchly (Mauchly 1940), Greenhouse-Geisser (1959), Huynh-Feldt (1976)
     sph = r.extra["sphericity"]
-    assert sph["mauchly_w"] == pytest.approx(0.136, abs=0.0005)
-    assert sph["chi2"] == pytest.approx(11.41, abs=0.005) and sph["df"] == 5
-    assert sph["p"] == pytest.approx(0.047, abs=0.0005)
-    # Greenhouse-Geisser epsilon = .533 (p = .063); Huynh-Feldt epsilon = .666 (p = .048)
-    assert row["eps_gg"] == pytest.approx(0.533, abs=0.0005)
-    assert row["p_gg"] == pytest.approx(0.063, abs=0.0005)
-    assert row["eps_hf"] == pytest.approx(0.666, abs=0.0005)
-    assert row["p_hf"] == pytest.approx(0.048, abs=0.0005)
+    assert sph["mauchly_w"] == pytest.approx(ref["w"], rel=1e-10)
+    assert sph["chi2"] == pytest.approx(ref["chi2"], rel=1e-10) and sph["df"] == ref["chi2_df"] == 5
+    assert sph["p_first_order"] == pytest.approx(stats.chi2.sf(ref["chi2"], 5), rel=1e-10)
+    assert 0 < sph["p"] < 0.05  # second-order (Box 1949) P; sphericity is clearly violated here
+    assert row["eps_gg"] == pytest.approx(ref["eps_gg"], rel=1e-10)
+    assert row["p_gg"] == pytest.approx(ref["p_gg"], rel=1e-8)
+    assert row["eps_hf"] == pytest.approx(ref["eps_hf"], rel=1e-10)
+    assert row["p_hf"] == pytest.approx(ref["p_hf"], rel=1e-8)
     assert row["eps_lb"] == pytest.approx(1 / 3)
+    # the data were chosen so that the correction changes the conclusion
+    assert row["p"] < 0.05 < row["p_gg"] and row["p_hf"] < 0.05
     check = next(a for a in r.assumptions if a.name.startswith("Sphericity"))
     assert check.status == "fail" and check.p_value == sph["p"]
-    # the published P value includes the second-order term; the plain chi-square tail is smaller
-    assert sph["p_first_order"] == pytest.approx(stats.chi2.sf(sph["chi2"], 5), rel=1e-12)
-    assert sph["p_first_order"] == pytest.approx(0.0439, abs=0.0005)
 
 
 def test_headline_correction_rule():
-    auto = rp.anova_rm_oneway(FIELD, FOODS, posthoc="none")
+    auto = rp.anova_rm_oneway(RM_DATA, CONDS, posthoc="none")
     row = table_row(auto, "Condition")
     assert auto.extra["correction_applied"] == "gg" and row["correction"] == "Greenhouse-Geisser"
     assert auto.p_value == row["p_gg"] == row["p_reported"]
@@ -128,12 +158,12 @@ def test_headline_correction_rule():
     assert auto.p_value == pytest.approx(stats.f.sf(row["f"], 3 * row["eps_gg"], 21 * row["eps_gg"]), rel=1e-12)
     assert "Greenhouse-Geisser" in auto.interpretation and "Greenhouse-Geisser" in auto.methods_text
     assert auto.finalize().significant is False  # .063 with the default correction
-    hf = rp.anova_rm_oneway(FIELD, FOODS, correction="hf", posthoc="none")
+    hf = rp.anova_rm_oneway(RM_DATA, CONDS, correction="hf", posthoc="none")
     assert hf.p_value == row["p_hf"] and hf.finalize().significant is True
     assert hf.df == pytest.approx(3 * row["eps_hf"])
-    gg = rp.anova_rm_oneway(FIELD, FOODS, correction="Greenhouse-Geisser", posthoc="none")
+    gg = rp.anova_rm_oneway(RM_DATA, CONDS, correction="Greenhouse-Geisser", posthoc="none")
     assert gg.p_value == row["p_gg"]
-    none = rp.anova_rm_oneway(FIELD, FOODS, correction="none", posthoc="none")
+    none = rp.anova_rm_oneway(RM_DATA, CONDS, correction="none", posthoc="none")
     assert none.p_value == row["p"] and "sphericity assumed" in none.methods_text
     assert row["p_lb"] == pytest.approx(stats.f.sf(row["f"], 1, 7), rel=1e-12)
     assert auto.extra["p_uncorrected"] == row["p"] and auto.extra["p_lower_bound"] == row["p_lb"]
@@ -263,20 +293,20 @@ def test_mauchly_p_is_roughly_uniform_under_sphericity():
 
 
 def test_oneway_posthoc_paired_t_tests():
-    r = rp.anova_rm_oneway(FIELD, FOODS, posthoc="holm")
+    r = rp.anova_rm_oneway(RM_DATA, CONDS, posthoc="holm")
     assert len(r.comparisons) == 6 and r.correction == "Holm"
     assert "all 6 pairwise comparisons among the 4 conditions" in r.comparison_family
     raw = []
     for a, b in itertools.combinations(range(4), 2):
-        comp = r.comparison(FOODS[a], FOODS[b])
-        ref = stats.ttest_rel(FIELD[:, a], FIELD[:, b])
-        assert comp.estimate == pytest.approx(FIELD[:, a].mean() - FIELD[:, b].mean(), rel=1e-12, abs=1e-12)
+        comp = r.comparison(CONDS[a], CONDS[b])
+        ref = stats.ttest_rel(RM_DATA[:, a], RM_DATA[:, b])
+        assert comp.estimate == pytest.approx(RM_DATA[:, a].mean() - RM_DATA[:, b].mean(), rel=1e-12, abs=1e-12)
         assert comp.statistic == pytest.approx(ref.statistic, rel=1e-10)
         assert comp.df == 7 and comp.p_value == pytest.approx(ref.pvalue, rel=1e-10)
-        diff = FIELD[:, a] - FIELD[:, b]
+        diff = RM_DATA[:, a] - RM_DATA[:, b]
         assert comp.effect_size.name == "Cohen's d_z (paired)"
         assert comp.effect_size.value == pytest.approx(diff.mean() / diff.std(ddof=1), rel=1e-10)
-        assert comp.cell_a == {"Condition": FOODS[a]} and comp.label is None
+        assert comp.cell_a == {"Condition": CONDS[a]} and comp.label is None
         # Holm P values are paired with Bonferroni simultaneous intervals
         ci = ref.confidence_interval(1 - 0.05 / 6)
         assert (comp.ci_low, comp.ci_high) == pytest.approx((ci.low, ci.high), rel=1e-9)
@@ -284,55 +314,55 @@ def test_oneway_posthoc_paired_t_tests():
     np.testing.assert_allclose([c.p_adjusted for c in r.comparisons], multipletests(raw, method="holm")[1], rtol=1e-10)
     for method, sm_name in (("bonferroni", "bonferroni"), ("sidak", "sidak"), ("holm-sidak", "holm-sidak"),
                             ("fdr_bh", "fdr_bh")):
-        rm = rp.anova_rm_oneway(FIELD, FOODS, posthoc=method)
+        rm = rp.anova_rm_oneway(RM_DATA, CONDS, posthoc=method)
         np.testing.assert_allclose([c.p_adjusted for c in rm.comparisons], multipletests(raw, method=sm_name)[1],
                                    rtol=1e-10)
-    plain = rp.anova_rm_oneway(FIELD, FOODS, posthoc="fdr_bh")
-    ci = stats.ttest_rel(FIELD[:, 0], FIELD[:, 1]).confidence_interval(0.95)
+    plain = rp.anova_rm_oneway(RM_DATA, CONDS, posthoc="fdr_bh")
+    ci = stats.ttest_rel(RM_DATA[:, 0], RM_DATA[:, 1]).confidence_interval(0.95)
     assert (plain.comparisons[0].ci_low, plain.comparisons[0].ci_high) == pytest.approx((ci.low, ci.high), rel=1e-9)
-    sid = rp.anova_rm_oneway(FIELD, FOODS, posthoc="sidak", alpha=0.01)
-    ci = stats.ttest_rel(FIELD[:, 0], FIELD[:, 1]).confidence_interval(0.99 ** (1 / 6))
+    sid = rp.anova_rm_oneway(RM_DATA, CONDS, posthoc="sidak", alpha=0.01)
+    ci = stats.ttest_rel(RM_DATA[:, 0], RM_DATA[:, 1]).confidence_interval(0.99 ** (1 / 6))
     assert (sid.comparisons[0].ci_low, sid.comparisons[0].ci_high) == pytest.approx((ci.low, ci.high), rel=1e-9)
     # comparisons against a control condition only
-    ctrl = rp.anova_rm_oneway(FIELD, FOODS, posthoc="bonferroni", control="Fish eye")
+    ctrl = rp.anova_rm_oneway(RM_DATA, CONDS, posthoc="bonferroni", control="Condition C")
     assert [(c.group_a, c.group_b) for c in ctrl.comparisons] == [
-        ("Stick insect", "Fish eye"), ("Kangaroo testicle", "Fish eye"), ("Witchetty grub", "Fish eye")]
-    ref = stats.ttest_rel(FIELD[:, 0], FIELD[:, 2])
+        ("Condition A", "Condition C"), ("Condition B", "Condition C"), ("Condition D", "Condition C")]
+    ref = stats.ttest_rel(RM_DATA[:, 0], RM_DATA[:, 2])
     assert ctrl.comparisons[0].p_adjusted == pytest.approx(min(1, 3 * ref.pvalue), rel=1e-10)
-    assert "control 'Fish eye'" in ctrl.comparison_family
+    assert "control 'Condition C'" in ctrl.comparison_family
     assert any(a.name.startswith("Normality of paired differences") for a in ctrl.assumptions)
-    none = rp.anova_rm_oneway(FIELD, FOODS, posthoc=None)
+    none = rp.anova_rm_oneway(RM_DATA, CONDS, posthoc=None)
     assert none.comparisons == [] and none.correction is None
     assert not any(a.name.startswith("Normality of paired differences") for a in none.assumptions)
 
 
 def test_oneway_missing_data_and_errors():
-    y = np.vstack([FIELD, [np.nan] * 4, [1.0, np.nan, 3.0, 4.0]])
-    r = rp.anova_rm_oneway(y, FOODS, posthoc="none")
+    y = np.vstack([RM_DATA, [np.nan] * 4, [1.0, np.nan, 3.0, 4.0]])
+    r = rp.anova_rm_oneway(y, CONDS, posthoc="none")
     assert r.n_total == 8 and len(r.data_notes) == 1 and "1 subject(s)" in r.data_notes[0]
-    assert table_row(r, "Condition")["f"] == pytest.approx(3.79, abs=0.005)
+    assert table_row(r, "Condition")["f"] == pytest.approx(_reference_rm(RM_DATA)["f"], rel=1e-10)
     with pytest.raises(StatsError, match="at least 2"):
-        rp.anova_rm_oneway(FIELD[:1], FOODS)
+        rp.anova_rm_oneway(RM_DATA[:1], CONDS)
     with pytest.raises(StatsError, match="at least two conditions"):
-        rp.anova_rm_oneway(FIELD[:, :1], FOODS[:1])
+        rp.anova_rm_oneway(RM_DATA[:, :1], CONDS[:1])
     with pytest.raises(StatsError, match="condition name"):
-        rp.anova_rm_oneway(FIELD, FOODS[:3])
+        rp.anova_rm_oneway(RM_DATA, CONDS[:3])
     with pytest.raises(StatsError, match="unique"):
-        rp.anova_rm_oneway(FIELD, ["a", "a", "b", "c"])
+        rp.anova_rm_oneway(RM_DATA, ["a", "a", "b", "c"])
     with pytest.raises(StatsError, match="numeric"):
         rp.anova_rm_oneway([["x", "y"], ["z", "w"]], ["a", "b"])
     with pytest.raises(StatsError, match="one row per subject"):
-        rp.anova_rm_oneway(FIELD[:, 0], ["a"])
+        rp.anova_rm_oneway(RM_DATA[:, 0], ["a"])
     with pytest.raises(StatsError, match="Control condition"):
-        rp.anova_rm_oneway(FIELD, FOODS, control="Tofu")
+        rp.anova_rm_oneway(RM_DATA, CONDS, control="Tofu")
     with pytest.raises(StatsError, match="correction must be"):
-        rp.anova_rm_oneway(FIELD, FOODS, correction="bonferroni")
+        rp.anova_rm_oneway(RM_DATA, CONDS, correction="bonferroni")
     with pytest.raises(StatsError, match="hf_variant"):
-        rp.anova_rm_oneway(FIELD, FOODS, hf_variant="new")
+        rp.anova_rm_oneway(RM_DATA, CONDS, hf_variant="new")
     with pytest.raises(StatsError, match="multiple-comparison method"):
-        rp.anova_rm_oneway(FIELD, FOODS, posthoc="tukey")
+        rp.anova_rm_oneway(RM_DATA, CONDS, posthoc="tukey")
     with pytest.raises(StatsError, match="alpha"):
-        rp.anova_rm_oneway(FIELD, FOODS, alpha=0)
+        rp.anova_rm_oneway(RM_DATA, CONDS, alpha=0)
 
 
 def test_oneway_degenerate_data_give_warnings():
@@ -342,8 +372,8 @@ def test_oneway_degenerate_data_give_warnings():
         # every subject changes by exactly the same amount: zero residual
         additive = rp.anova_rm_oneway(np.arange(5.0)[:, None] + np.array([0.0, 1.0, 3.0]), list("abc"))
         # fewer subjects than conditions: Mauchly and Huynh-Feldt are not available
-        few = rp.anova_rm_oneway(FIELD[:2], FOODS, correction="hf")
-        three = rp.anova_rm_oneway(FIELD[:3], FOODS)
+        few = rp.anova_rm_oneway(RM_DATA[:2], CONDS, correction="hf")
+        three = rp.anova_rm_oneway(RM_DATA[:3], CONDS)
     assert const.p_value is None and any("identical" in w for w in const.warnings)
     assert all(row["ss"] == 0 for row in const.anova_table)
     assert const.effect_sizes[0].value is None and all(c.p_value is None for c in const.comparisons)
@@ -818,29 +848,29 @@ def check_registry_result(result, key, table_name):
 
 
 def test_registry_rm_oneway_on_column_table(run):
-    table = ColumnTable.from_dict("Bushtucker", {name: FIELD[:, j] for j, name in enumerate(FOODS)})
+    table = ColumnTable.from_dict("Repeated", {name: RM_DATA[:, j] for j, name in enumerate(CONDS)})
     r = run(table, "anova_rm_oneway")
-    check_registry_result(r, "anova_rm_oneway", "Bushtucker")
+    check_registry_result(r, "anova_rm_oneway", "Repeated")
     assert r.params == {"groups": None, "correction": "auto", "posthoc": "holm", "control": None, "alpha": 0.05}
-    assert r.p_value == pytest.approx(0.063, abs=0.0005) and len(r.comparisons) == 6
+    assert r.p_value == pytest.approx(_reference_rm(RM_DATA)["p_gg"], rel=1e-8) and len(r.comparisons) == 6
     assert all(c.id.startswith(r.id) and c.significant is not None for c in r.comparisons)
-    r = run(table, "anova_rm_oneway", groups=FOODS[:3], control=FOODS[0], correction="none", posthoc="bonferroni")
-    assert len(r.comparisons) == 2 and r.df == 2 and list(r.n) == FOODS[:3]
-    direct = rp.anova_rm_oneway(FIELD[:, :3], FOODS[:3], correction="none", posthoc="bonferroni", control=FOODS[0])
+    r = run(table, "anova_rm_oneway", groups=CONDS[:3], control=CONDS[0], correction="none", posthoc="bonferroni")
+    assert len(r.comparisons) == 2 and r.df == 2 and list(r.n) == CONDS[:3]
+    direct = rp.anova_rm_oneway(RM_DATA[:, :3], CONDS[:3], correction="none", posthoc="bonferroni", control=CONDS[0])
     assert r.statistic == pytest.approx(direct.statistic)
     # an excluded cell removes that subject (row) and is reported; unequal column lengths are fine
-    table.exclude([(2, FOODS[1])])
+    table.exclude([(2, CONDS[1])])
     r = run(table, "anova_rm_oneway", posthoc="none")
     assert r.n_total == 7 and any("left out" in n for n in r.data_notes) and any("excluded" in n for n in r.data_notes)
     ragged = ColumnTable.from_dict("r", {"a": [1, 2, 4, 3, 6], "b": [2, 4, 5, 5], "c": [3, 3, 7, 4]})
     r = run(ragged, "anova_rm_oneway")
     assert r.n_total == 4 and len(r.data_notes) == 1
     with pytest.raises(StatsError, match="Unknown column"):
-        run(table, "anova_rm_oneway", groups=["nope", FOODS[0]])
+        run(table, "anova_rm_oneway", groups=["nope", CONDS[0]])
     with pytest.raises(StatsError, match="only once"):
-        run(table, "anova_rm_oneway", groups=[FOODS[0], FOODS[0]])
+        run(table, "anova_rm_oneway", groups=[CONDS[0], CONDS[0]])
     with pytest.raises(StatsError, match="at least two columns"):
-        run(table, "anova_rm_oneway", groups=FOODS[0])
+        run(table, "anova_rm_oneway", groups=CONDS[0])
 
 
 def test_registry_mixed_on_grouped_table(run):

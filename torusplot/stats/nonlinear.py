@@ -912,7 +912,7 @@ class _Problem:
     lower: np.ndarray
     upper: np.ndarray
     n: int
-    ss_scale: float                                # sum(w y^2), for perfect-fit detection
+    exact_ss: float                                # residual SS at or below which the fit is exact
     #: Power of two close to the size of the weighted data. The optimiser works on
     #: residuals divided by it (exact), so that its stopping rules (some of which are
     #: absolute thresholds on the gradient) do not depend on the unit of Y.
@@ -1028,7 +1028,7 @@ def _attempt(problem: _Problem, start: np.ndarray, method: str,
 def _judge(problem: _Problem, cand: _Candidate) -> _Candidate:
     cand.active = _active_mask(cand.theta, problem.lower, problem.upper)
     cand.offset = _relative_offset(problem, cand.theta, cand.active)
-    near_perfect = cand.ss <= NEAR_PERFECT_RATIO * max(problem.ss_scale, 1e-300)
+    near_perfect = cand.ss <= problem.exact_ss
     if near_perfect:
         cand.converged = True
     elif cand.offset is None:
@@ -1259,6 +1259,31 @@ class _Fit:
         return out
 
 
+def _exact_ss(w: np.ndarray, y: np.ndarray) -> float:
+    """Weighted residual SS at or below which a fit is exact (no scatter left to analyse).
+
+    The larger of ``NEAR_PERFECT_RATIO`` times the weighted, *centred* total sum of squares
+    and the SS that rounding alone leaves behind, n * (4 ulp of the largest weighted |y|)^2.
+    Both follow the unit of Y, and neither grows with a common offset: measured against the
+    uncentred sum of y^2, a fit would be called "exact" whenever the mean of Y is some 1e10
+    times its scatter.
+    """
+    w = np.asarray(w, dtype=float)
+    y = np.asarray(y, dtype=float)
+    if y.size == 0:
+        return 0.0
+    with np.errstate(all="ignore"):
+        unit = _unit_scale(y)
+        ys = y / unit
+        total = float(np.sum(w))
+        ybar = float(np.sum(w * ys) / total) if total > 0 else 0.0
+        ss_tot = float(np.sum(w * (ys - ybar) ** 2)) * unit * unit
+        top = float(np.max(np.abs(np.sqrt(w) * y)))
+        rounding = y.size * (4.0 * float(np.spacing(top))) ** 2 if math.isfinite(top) else 0.0
+    out = max(NEAR_PERFECT_RATIO * ss_tot, rounding)
+    return out if math.isfinite(out) else 0.0
+
+
 def _make_problem(
     model: CurveModel, tx: np.ndarray, y: np.ndarray, w: np.ndarray, theta_full: np.ndarray,
     free: np.ndarray, lower: np.ndarray, upper: np.ndarray,
@@ -1279,7 +1304,7 @@ def _make_problem(
         return sqrt_w[:, None] * model.jac(tx, full(theta))[:, idx]
 
     return _Problem(residual=residual, jacobian=jacobian, lower=lower[idx], upper=upper[idx],
-                    n=int(y.size), ss_scale=float(np.sum(w * y * y)), unit=_unit_scale(sqrt_w * y))
+                    n=int(y.size), exact_ss=_exact_ss(w, y), unit=_unit_scale(sqrt_w * y))
 
 
 def _run_fit(
@@ -1660,7 +1685,7 @@ def _setup(
 
 def _goodness(fit: _Fit) -> dict[str, Any]:
     n, p, df = fit.n, fit.p, fit.df
-    perfect = fit.ss <= NEAR_PERFECT_RATIO * max(float(np.sum(fit.w * fit.y**2)), 1e-300)
+    perfect = fit.ss <= _exact_ss(fit.w, fit.y)
     r2 = None
     if fit.ss_tot > 0:
         r2 = 1.0 - fit.ss / fit.ss_tot
@@ -2707,7 +2732,7 @@ def compare_datasets(
     start = np.concatenate([[float(np.mean([fits[n].theta[idx_shared] for n in names]))],
                             *[fits[n].theta[idx_other] for n in names]])
     problem = _Problem(residual=residual, jacobian=jacobian, lower=lower, upper=upper, n=n_total,
-                       ss_scale=float(sum(np.sum(f.w * f.y**2) for f in fits.values())),
+                       exact_ss=sum(_exact_ss(f.w, f.y) for f in fits.values()),
                        unit=_unit_scale(np.concatenate([np.sqrt(f.w) * f.y for f in fits.values()])))
     cand, _ = _solve(problem, start)
     if cand is None:
@@ -2721,7 +2746,7 @@ def compare_datasets(
     f_stat = p_value = None
     if df_sep < 1:
         warns.append("Too few points for an F test (no residual degrees of freedom).")
-    elif ss_sep <= NEAR_PERFECT_RATIO * max(problem.ss_scale, 1e-300):
+    elif ss_sep <= problem.exact_ss:
         warns.append("The separate curves fit the data exactly, so the F ratio is undefined.")
     else:
         f_stat = max(((ss_shared - ss_sep) / df_num) / (ss_sep / df_sep), 0.0)
@@ -2783,7 +2808,7 @@ def compare_datasets(
     ic_shared = information_criteria(ss_shared, n_total, 1 + k * n_other)
     akaike = _akaike(ic_shared["aicc"], ic_sep["aicc"])
     resid_all = np.concatenate([np.sqrt(f.w) * (f.y - f.fitted) for f in fits.values()])
-    perfect = ss_sep <= NEAR_PERFECT_RATIO * max(problem.ss_scale, 1e-300)
+    perfect = ss_sep <= problem.exact_ss
     result = StatResult(
         analysis="compare_datasets",
         test_name=f"Comparison of {label} between data sets (extra sum-of-squares F test)",

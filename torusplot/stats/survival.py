@@ -267,8 +267,8 @@ def _km(t: np.ndarray, e: np.ndarray, ci_level: float, ci_method: str) -> dict[s
             median_note = (
                 f"The upper {ci_level * 100:g}% confidence limit of the median was not reached "
                 "(the upper confidence band never drops to 50%"
-                + (" before the curve reaches 0, where the band is undefined; there are too few "
-                   "subjects to bound the median from above)." if bool(at_zero.any()) else ").")
+                + (" before the curve reaches 0, where the band is undefined: these data cannot "
+                   "bound the median from above)." if bool(at_zero.any()) else ").")
             )
 
     curve = {
@@ -1035,7 +1035,7 @@ def survival_analysis(
 # ===================================================================== table adapter
 _TIME_WORDS = ("time", "duration", "days", "weeks", "months", "years", "follow")
 _EVENT_WORDS = ("event", "status", "death", "dead", "died")
-_GROUP_WORDS = ("group", "arm", "treatment", "condition", "genotype", "cohort", "strain")
+_GROUP_WORDS = ("group", "arm", "treatment", "condition", "genotype", "cohort", "strain", "dose", "stage")
 
 
 def _match_column(columns: list[str], words: tuple[str, ...], taken: set[str]) -> str | None:
@@ -1112,8 +1112,9 @@ def _pick_survival_columns(
                        "occurred, 0 = censored (the subject was still event-free when last seen). "
                        "Leave empty to use a column named like 'event' or 'status'."),
         ParamSpec("group", "Group column", kind="column", default=None, optional=True,
-                  help="The column that says which group each subject belongs to. Leave empty to use "
-                       "a column named like 'group', or to fit one curve when there is none."),
+                  help="The column that says which group each subject belongs to (it may hold numbers, "
+                       "such as doses). Leave empty to use a column named like 'group', 'treatment' or "
+                       "'dose', or to fit one curve when there is none."),
         ParamSpec("test", "Comparison test", kind="choice", default="logrank",
                   choices=("logrank", "gehan", "both"),
                   help="Log-rank weights all time points equally (the standard choice). "

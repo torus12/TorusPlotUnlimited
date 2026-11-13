@@ -48,16 +48,29 @@ BATTERY = {
     ("3", "15"): (138, 110, 168, 160), ("3", "70"): (174, 120, 150, 139), ("3", "125"): (96, 104, 82, 60),
 }
 
-# Crampton EW (1947) J Nutr 33:491-504 (tooth growth in guinea pigs; also Bliss 1952):
-# odontoblast length by supplement (VC = ascorbic acid, OJ = orange juice) and dose (mg/day).
-TOOTH = {
-    ("VC", "0.5"): [4.2, 11.5, 7.3, 5.8, 6.4, 10, 11.2, 11.2, 5.2, 7],
-    ("VC", "1"): [16.5, 16.5, 15.2, 17.3, 22.5, 17.3, 13.6, 14.5, 18.8, 15.5],
-    ("VC", "2"): [23.6, 18.5, 33.9, 25.5, 26.4, 32.5, 26.7, 21.5, 23.3, 29.5],
-    ("OJ", "0.5"): [15.2, 21.5, 17.6, 9.7, 14.5, 10, 8.2, 9.4, 16.5, 9.7],
-    ("OJ", "1"): [19.7, 23.3, 23.6, 26.4, 20, 25.2, 25.8, 21.2, 14.5, 27.3],
-    ("OJ", "2"): [25.5, 26.4, 22.4, 24.5, 24.8, 30.9, 26.4, 27.3, 29.4, 23],
-}
+# Constructed (synthetic) balanced 2 x 3 factorial with n = 10 per cell: every cell is its
+# prescribed mean plus the same zero-sum deviations (in a different order per cell), so every
+# sum of squares is known exactly from the definitions (see _tooth_like_reference below).
+_DEV = np.arange(10) - 4.5  # sums to 0; sum of squares 82.5
+_MEANS = {("VC", "0.5"): 8.0, ("VC", "1"): 16.0, ("VC", "2"): 26.0,
+          ("OJ", "0.5"): 13.0, ("OJ", "1"): 22.0, ("OJ", "2"): 26.0}
+TOOTH = {key: [round(mu + d, 1) for d in np.roll(_DEV, i)] for i, (key, mu) in enumerate(_MEANS.items())}
+
+
+def _tooth_like_reference():
+    """Exact balanced-design sums of squares for TOOTH (Fisher 1925; any ANOVA text)."""
+    n = 10
+    m = np.array([[_MEANS[("VC", d)] for d in ("0.5", "1", "2")], [_MEANS[("OJ", d)] for d in ("0.5", "1", "2")]])
+    grand = m.mean()
+    ss_a = n * 3 * ((m.mean(axis=1) - grand) ** 2).sum()
+    ss_b = n * 2 * ((m.mean(axis=0) - grand) ** 2).sum()
+    ss_cells = n * ((m - grand) ** 2).sum()
+    ss_ab = ss_cells - ss_a - ss_b
+    ss_err = 6 * float((_DEV**2).sum())
+    ms_err = ss_err / 54
+    return {"ss_a": ss_a, "ss_b": ss_b, "ss_ab": ss_ab, "ss_err": ss_err,
+            "f_a": ss_a / 1 / ms_err, "f_b": ss_b / 2 / ms_err, "f_ab": ss_ab / 2 / ms_err,
+            "p_ab": stats.f.sf(ss_ab / 2 / ms_err, 2, 54)}
 
 
 def long_from_cells(cells, names=("A", "B"), value="y"):
@@ -161,22 +174,19 @@ def test_published_montgomery_battery_life():
     assert r.extra["headline_term"] == "Material x Temperature"
 
 
-def test_published_tooth_growth():
+def test_balanced_two_way_matches_exact_sums_of_squares():
     frame = long_from_cells(TOOTH, ("supp", "dose"), "len")
-    # typing check against the well-known cell means and grand mean
-    means = frame.groupby(["supp", "dose"])["len"].mean()
-    assert means[("VC", "0.5")] == pytest.approx(7.98) and means[("OJ", "2")] == pytest.approx(26.06)
-    assert frame["len"].mean() == pytest.approx(18.8133, abs=5e-5)
+    ref = _tooth_like_reference()
     r = fx.anova_twoway(frame, "len", "supp", "dose")
-    assert table_row(r, "supp")["f"] == pytest.approx(15.572, abs=5e-4)
-    assert table_row(r, "dose")["f"] == pytest.approx(92.000, abs=5e-4)
-    assert table_row(r, "supp x dose")["f"] == pytest.approx(4.107, abs=5e-4)
+    assert table_row(r, "supp")["f"] == pytest.approx(ref["f_a"], rel=1e-10)
+    assert table_row(r, "dose")["f"] == pytest.approx(ref["f_b"], rel=1e-10)
+    assert table_row(r, "supp x dose")["f"] == pytest.approx(ref["f_ab"], rel=1e-10)
     assert [table_row(r, s)["df"] for s in ("supp", "dose", "supp x dose", "Residual")] == [1, 2, 2, 54]
-    assert table_row(r, "supp")["ss"] == pytest.approx(205.35, abs=0.005)
-    assert table_row(r, "dose")["ss"] == pytest.approx(2426.43, abs=0.005)
-    assert table_row(r, "supp x dose")["ss"] == pytest.approx(108.32, abs=0.005)
-    assert table_row(r, "Residual")["ss"] == pytest.approx(712.11, abs=0.005)
-    assert table_row(r, "supp x dose")["p"] == pytest.approx(0.02186, abs=5e-6)
+    assert table_row(r, "supp")["ss"] == pytest.approx(ref["ss_a"], rel=1e-10)
+    assert table_row(r, "dose")["ss"] == pytest.approx(ref["ss_b"], rel=1e-10)
+    assert table_row(r, "supp x dose")["ss"] == pytest.approx(ref["ss_ab"], rel=1e-10)
+    assert table_row(r, "Residual")["ss"] == pytest.approx(ref["ss_err"], rel=1e-10)
+    assert table_row(r, "supp x dose")["p"] == pytest.approx(ref["p_ab"], rel=1e-8)
 
 
 # =============================================================================
@@ -771,7 +781,7 @@ def test_missing_values_level_order_and_labels():
     numeric = numeric.sample(frac=1.0, random_state=1)
     r = fx.anova_twoway(numeric, "len", "supp", "dose")
     assert r.extra["levels"]["dose"] == ["0.5", "1", "2"]
-    assert table_row(r, "dose")["f"] == pytest.approx(92.000, abs=5e-4)
+    assert table_row(r, "dose")["f"] == pytest.approx(_tooth_like_reference()["f_b"], rel=1e-10)
     # identical labels for two factors are disambiguated
     r = fx.anova_twoway(numeric, "len", "supp", "dose", factor_labels={"supp": "X", "dose": "X"})
     assert r.extra["factor_labels"] == {"supp": "X (supp)", "dose": "X (dose)"}
@@ -912,7 +922,7 @@ def test_registry_two_way_and_three_way_on_multiple_variables(run):
     tooth = long_from_cells(TOOTH, ("supp", "dose"), "len")
     tooth["dose"] = tooth["dose"].astype(float)
     r = run(MultipleVariablesTable("tooth", tooth), "anova_twoway", value="len", factor_a="supp", factor_b="dose")
-    assert table_row(r, "supp x dose")["f"] == pytest.approx(4.107, abs=5e-4)
+    assert table_row(r, "supp x dose")["f"] == pytest.approx(_tooth_like_reference()["f_ab"], rel=1e-10)
 
 
 def test_registry_ancova(run):
@@ -1269,3 +1279,28 @@ def test_grouped_table_text_does_not_leak_the_internal_column_name(run):
     frame = table.to_long().rename(columns={"value": "Uptake", "row": "Time", "column": "Treatment"})
     mv = run(MultipleVariablesTable("mv", frame[["Uptake", "Time", "Treatment"]]), "anova_twoway")
     assert mv.interpretation.startswith("Two-way ANOVA of Uptake by")
+
+
+@pytest.mark.parametrize("offset", [1e6, 1e9, 1e12])
+def test_ancova_does_not_depend_on_a_large_offset_of_the_covariate(offset):
+    """A covariate such as 1e9 + small numbers is numerically the same column as the constant
+    in the raw design; the model is fitted on the centred covariate, which changes nothing but
+    the intercept."""
+    df = _scale_frame()
+    df["cov"] = np.round(df["cov"] * 64) / 64
+    shifted = df.assign(cov=df["cov"] + offset)
+    assert np.array_equal(shifted["cov"] - offset, df["cov"])
+    base = fx.ancova(df, "y", "A", "cov", posthoc="tukey")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        res = fx.ancova(shifted, "y", "A", "cov", posthoc="tukey")
+    _same(_factorial_unit_free(res), _factorial_unit_free(base), rel=1e-7)
+    _same([res.parameters[0].value, res.parameters[0].se, res.parameters[0].p_value],
+          [base.parameters[0].value, base.parameters[0].se, base.parameters[0].p_value], rel=1e-7)
+    _same([(a["adjusted_mean"], a["se"]) for a in res.extra["adjusted_means"]],
+          [(a["adjusted_mean"], a["se"]) for a in base.extra["adjusted_means"]], rel=1e-7)
+    assert res.extra["covariate_means"]["cov"] == pytest.approx(base.extra["covariate_means"]["cov"] + offset)
+    # the two-factor ANCOVA route (covariates of anova_factorial) as well
+    two = fx.anova_factorial(shifted, "y", ["A", "B"], covariates=["cov"])
+    ref = fx.anova_factorial(df, "y", ["A", "B"], covariates=["cov"])
+    _same([(r["f"], r["p"]) for r in two.anova_table], [(r["f"], r["p"]) for r in ref.anova_table], rel=1e-7)

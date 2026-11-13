@@ -39,7 +39,11 @@ What is computed
 * Scale: every test statistic is unit-free. The outcome is divided internally by a
   power of two close to its largest absolute value (an exact operation) before the
   model is fitted, and sums of squares, means and standard errors are converted back
-  for reporting, so the results do not depend on the unit of measurement.
+  for reporting, so the results do not depend on the unit of measurement. Covariates
+  are centred on their mean and rescaled in the same way (this changes only the
+  intercept; slopes are reported per original unit), so a covariate with a large common
+  offset does not make the design numerically singular. "No variation" is always judged
+  relative to the data (a few units in the last place), never against an absolute number.
 
   - Tukey (Tukey-Kramer for unequal n): P = P(Q[k, df] > |t| * sqrt(2)), where ``k``
     is the number of means compared in one family: the number of levels of the factor
@@ -214,6 +218,21 @@ def _unit_scale(values: Any) -> float:
     if not top > 0.0:
         return 1.0
     return math.ldexp(1.0, math.frexp(top)[1] - 1)
+
+
+def _centre(values: Any) -> tuple[float, np.ndarray]:
+    """Mean and deviations from the mean, accurate also with a large common offset.
+
+    A plain ``x - x.mean()`` loses the centring when the running sum of the values exceeds
+    2**53 times their spacing (e.g. twelve values near 1e15). Here the values are first
+    shifted by a pivot (the first-pass mean; subtracting nearby doubles is exact or nearly
+    so), and the mean of the small remainders is removed in a second pass.
+    """
+    arr = np.asarray(values, dtype=float)
+    pivot = float(arr.mean())
+    shifted = arr - pivot
+    correction = float(shifted.mean())
+    return pivot + correction, shifted - correction
 
 
 def _to_units(value: Any, unit: float, power: int = 1) -> float | None:
@@ -475,7 +494,7 @@ class _Design:
     covariates: list[str]
     codes: np.ndarray  # (N, n_factors) integer level codes
     y: np.ndarray  # outcome divided by ``unit`` (what the model is fitted to)
-    cov: np.ndarray  # (N, n_covariates), each column divided by its ``cov_units`` entry
+    cov: np.ndarray  # (N, n_covariates): (covariate - its mean) / its ``cov_units`` entry
     notes: list[str] = field(default_factory=list)
     unit: float = 1.0  # power of two: outcome in data units = y * unit
     cov_units: list[float] = field(default_factory=list)
@@ -561,8 +580,15 @@ def _prepare(df: pd.DataFrame, value: str, factors: Any, covariates: Any,
     # Work in rescaled units (exact division by a power of two): the analysis is unit-free.
     unit = _unit_scale(y_raw)
     y = y_raw / unit
-    cov_units = [_unit_scale(cov_raw[:, j]) for j in range(len(covariates))]
-    cov = cov_raw / np.asarray(cov_units, dtype=float) if covariates else cov_raw
+    # Covariates are centred as well as rescaled. Centring changes only the intercept (no test,
+    # slope or adjusted mean), but it keeps the design well conditioned: a raw covariate such as
+    # 1e9 + small numbers is numerically indistinguishable from the constant column.
+    cov = np.empty_like(cov_raw)
+    cov_units = []
+    for j in range(len(covariates)):
+        _, deviations = _centre(cov_raw[:, j])
+        cov_units.append(_unit_scale(deviations))
+        cov[:, j] = deviations / cov_units[-1]
 
     labels = [str((factor_labels or {}).get(f, f)) for f in factors]
     if len(set(labels)) != len(labels):
@@ -1125,6 +1151,14 @@ def anova_factorial(
             else:
                 means_note = "observed cell means (marginal means are unweighted averages of cell means)."
             extra["comparisons_note"] = _ci_note(method) + " Means compared: " + means_note
+            if fit.max_order == 1 and cond:
+                letter = "abcdefghijklmnopqrstuvwxyz"[target]
+                warnings_out.append(
+                    f"The model has no interaction term, so the difference between two levels of "
+                    f"{design.labels[target]} is estimated to be the same at every level of "
+                    f"{' and '.join(design.labels[i] for i in cond)}: the comparisons within each level repeat "
+                    f"the main-effect comparison. Choose 'main_{letter}' to list each comparison once."
+                )
             extra["tukey_k"] = k if method == "tukey" else None
 
     # ---------------------------------------------------------------- headline + text

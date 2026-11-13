@@ -171,8 +171,18 @@ def test_is_constant_uses_floating_point_spacing():
     assert p_phrase(0.00001) == "P < 0.0001" and p_phrase(0.0312) == "P = 0.0312" and p_phrase(None) == "P not available"
 
 
-def test_is_constant_treats_underflowing_spread_as_constant():
+def test_is_constant_has_no_absolute_floor():
+    """Constant means a spread within a few ulp of the data magnitude, whatever that
+    magnitude is: tiny values that differ by a real fraction of their size are not
+    constant (computations that could underflow rescale the data instead)."""
     from torusplot.stats._utils import is_constant
 
-    assert is_constant(np.array([0.0, 0.0, 1.1e-153]))  # variance and higher moments would underflow
+    assert not is_constant(np.array([0.0, 0.0, 1.1e-153]))
     assert not is_constant(np.array([0.0, 0.0, 1e-60]))
+    assert not is_constant(np.array([1e-80, 2e-80, 3e-80]))
+    assert is_constant(np.array([1e-80, 1e-80, 1e-80]))
+    assert is_constant(np.array([0.1 + 0.2, 0.3, 0.3]))  # rounding noise only
+    assert is_constant(np.array([1e300, 1e300 * (1 + 2**-52)]))
+    assert not is_constant(np.array([1e12 + 0.1, 1e12 + 0.3]))  # huge offset, real spread
+    assert is_constant(np.array([0.0, 0.0]))
+    assert is_constant(np.array([7.0]))
