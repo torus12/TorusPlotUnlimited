@@ -34,3 +34,86 @@ packages:
       Pillow's license text is the historical PIL permission notice. SPDX now labels it
       MIT-CMU; older Pillow releases labelled the same text HPND. It is a permissive
       license (use, copy, modify, distribute for any purpose with the notice retained).
+
+# Packages pinned in requirements-lock.txt that are only installed on other platforms, so
+# their metadata cannot be read on every machine. License verified from PyPI metadata.
+platform_packages:
+  pywin32:
+    verified_license: "PSF-2.0"
+    when: "Windows only"
+    source_url: "https://pypi.org/project/pywin32/"
+    verified_on: "2026-11-13"
+    reason: >
+      PyPI metadata: license "PSF", classifier "Python Software Foundation License". Pulled in
+      on Windows by the MCP SDK.
+  httpx2-jsfetch:
+    verified_license: "BSD-3-Clause"
+    when: "browser (Emscripten/Pyodide) builds only; never installed on a desktop"
+    source_url: "https://pypi.org/project/httpx2-jsfetch/"
+    verified_on: "2026-11-13"
+    reason: "PyPI metadata: license expression BSD-3-Clause."
+
+# Human review of wheels that bundle native libraries (a *.libs folder) or whose license
+# texts mention a GPL-family license. The gate fails for any such wheel without an entry.
+bundled_review:
+  numpy:
+    finding: >
+      BSD-3-Clause package. The wheel bundles OpenBLAS (BSD-3-Clause) and GCC runtime
+      libraries: libgfortran (GPL-3.0-or-later WITH GCC-exception-3.1; the exception permits
+      use by proprietary programs) and libquadmath (LGPL-2.1-or-later; separate, replaceable
+      shared library). Not redistributed by TorusPlot. See DECISIONS.md D-007.
+    source_url: "https://github.com/numpy/numpy/blob/main/LICENSES_bundled.txt"
+    verified_on: "2026-11-13"
+  scipy:
+    finding: >
+      BSD-3-Clause package. Same bundled GCC runtime libraries as NumPy (libgfortran under
+      GPL-3.0-or-later WITH GCC-exception-3.1; libquadmath under LGPL-2.1-or-later) plus
+      OpenBLAS (BSD-3-Clause). The wheel's license file reproduces the GPL/LGPL texts for
+      those components. Not redistributed by TorusPlot. See DECISIONS.md D-007.
+    source_url: "https://github.com/scipy/scipy/blob/main/LICENSES_bundled.txt"
+    verified_on: "2026-11-13"
+  matplotlib:
+    finding: >
+      Matplotlib license (PSF-based). The wheel bundles FreeType, which is dual-licensed
+      "FTL OR GPL-2.0-or-later": the permissive FreeType License (FTL) option applies. Also
+      bundles Agg and Qhull under permissive licenses.
+    source_url: "https://github.com/matplotlib/matplotlib/tree/main/LICENSE"
+    verified_on: "2026-11-13"
+  pillow:
+    finding: >
+      MIT-CMU (HPND-style) package. The wheel bundles image libraries under permissive
+      licenses (libjpeg-turbo, zlib, libpng, libtiff, libwebp, OpenJPEG, Little CMS, FreeType
+      under its FTL option, liblzma under 0BSD, and others). GPL/LGPL appear in its license
+      file only as (a) FreeType's alternative license and (b) a note about license texts for
+      xz command-line tools, which are not in the wheel. On Linux the wheel does not include
+      libimagequant (GPL) or FriBiDi (LGPL); the Windows and macOS wheels are checked by the
+      gate on those CI platforms.
+    source_url: "https://github.com/python-pillow/Pillow/blob/main/LICENSE"
+    verified_on: "2026-11-13"
+  charset-normalizer:
+    finding: >
+      MIT package. "LGPL" appears only in its README text, in a sentence about the history of
+      a different project (chardet). No LGPL code is included.
+    source_url: "https://github.com/jawah/charset_normalizer/blob/master/LICENSE"
+    verified_on: "2026-11-13"
+  pandas:
+    finding: >
+      BSD-3-Clause package. "GPL" appears only inside the Python Software Foundation license
+      text that pandas reproduces for vendored CPython-derived code: its history section says
+      Python releases are "GPL-compatible" and that this "doesn't mean that we're
+      distributing Python under the GPL". No GPL code is included.
+    source_url: "https://github.com/pandas-dev/pandas/blob/main/LICENSE"
+    verified_on: "2026-11-13"
+  et-xmlfile:
+    finding: >
+      MIT package. "GPL" appears only in the bundled Python Software Foundation license text
+      (history section, "GPL-compatible"), reproduced because parts derive from CPython's
+      ElementTree. No GPL code is included.
+    source_url: "https://foss.heptapod.net/openpyxl/et_xmlfile"
+    verified_on: "2026-11-13"
+  typing-extensions:
+    finding: >
+      PSF-2.0 package. "GPL" appears only in the history section of the PSF license itself
+      ("GPL-compatible doesn't mean that we're distributing Python under the GPL").
+    source_url: "https://github.com/python/typing_extensions/blob/main/LICENSE"
+    verified_on: "2026-11-13"

@@ -227,15 +227,15 @@ def format_p(p: float | None, digits: int = 4) -> str:
     return f"{p:.{digits}f}"
 
 
-def p_to_stars(p: float | None, style: str = "gp") -> str:
+def p_to_stars(p: float | None, style: str = "four") -> str:
     """Significance stars.
 
-    ``style='gp'``:  ns (>= 0.05), * (< 0.05), ** (< 0.01), *** (< 0.001), **** (< 0.0001)
-    ``style='apa'``: ns, *, **, *** (three-star maximum)
+    ``style='four'``:  ns (>= 0.05), * (< 0.05), ** (< 0.01), *** (< 0.001), **** (< 0.0001)
+    ``style='three'``: ns, *, **, *** (three-star maximum)
     """
     if p is None or (isinstance(p, float) and math.isnan(p)):
         return "n/a"
-    if p < 0.0001 and style == "gp":
+    if p < 0.0001 and style == "four":
         return "****"
     if p < 0.001:
         return "***"

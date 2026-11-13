@@ -24,7 +24,9 @@ fi
 if [ ! -f ".venv/torusplot_installed.txt" ]; then
     echo "Installing required packages from PyPI (once, a few minutes)..."
     .venv/bin/python -m pip install --upgrade pip
-    .venv/bin/python -m pip install -r requirements.txt
+    # exact, hash-checked versions (the tested and license-audited set); fall back to ranges
+    .venv/bin/python -m pip install --require-hashes -r requirements-lock.txt || \
+        .venv/bin/python -m pip install -r requirements.txt
     echo installed > .venv/torusplot_installed.txt
 fi
 

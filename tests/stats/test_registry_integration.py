@@ -229,6 +229,6 @@ def test_result_helpers():
     assert format_p(None) == "n/a" and format_p(float("nan")) == "n/a"
     assert format_p(0.00001) == "<0.0001" and format_p(0.04321) == "0.0432" and format_p(0.5, digits=2) == "0.50"
     assert [p_to_stars(p) for p in (0.2, 0.04, 0.004, 0.0004, 0.00004, None)] == ["ns", "*", "**", "***", "****", "n/a"]
-    assert p_to_stars(0.00004, style="apa") == "***"
+    assert p_to_stars(0.00004, style="three") == "***"
     with pytest.raises(ValueError):
         StatResult(analysis="x", test_name="y", nonsense=1)

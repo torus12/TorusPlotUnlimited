@@ -34,7 +34,7 @@ class Bracket:
     comparison_id: str = ""
 
 
-def comparison_label(comp: Comparison, fmt: str = "stars", star_style: str = "gp") -> str:
+def comparison_label(comp: Comparison, fmt: str = "stars", star_style: str = "four") -> str:
     """Text for a bracket, derived only from the comparison's computed p value."""
     p = comp.p_for_display
     stars = p_to_stars(p, style=star_style)

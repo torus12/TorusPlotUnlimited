@@ -172,4 +172,4 @@ def test_data_presentation_sentences():
     assert sentence("paired") == "Individual data points are shown."
     assert sentence("heatmap") == "" and data_presentation_sentence(None) == ""
     assert "95% confidence interval" in sentence("bar", layers=[{"type": "mean_bar"}, {"type": "ci95_errorbar"}])
-    assert "****" in significance_legend() and "****" not in significance_legend("apa")
+    assert "****" in significance_legend() and "****" not in significance_legend("three")

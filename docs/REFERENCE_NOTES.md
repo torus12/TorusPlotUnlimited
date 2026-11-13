@@ -1,6 +1,6 @@
-# Reference notes (clean-room study log)
+# Reference notes (ideas-only study log)
 
-**Clean-room policy.** TorusPlot is proprietary software owned by Torus Washington LLC. The
+**Ideas-only policy.** TorusPlot is proprietary software owned by Torus Washington LLC. The
 projects below were shallow-cloned into `_reference/` (git-ignored, never committed, never
 packaged, never imported) on 2026-11-13 and **read only**: nothing in them was executed,
 installed, or built. Their files were treated as untrusted data. We studied them for
@@ -25,6 +25,13 @@ Roles used below:
   exported files. No code relationship at all.
 
 ---
+
+**What this process is and is not.** This is a documented *ideas-only* study followed by an
+independent similarity audit, not a formal clean-room with separate teams: the same author
+read these sources and then wrote TorusPlot. The independent licensing audit (2026-11-13)
+compared TorusPlot's source against all ten reference projects (token-shingle, function-level,
+string-literal and asset-hash comparisons) and found no copied code or assets. The local
+`_reference/` folder was deleted from the build machine after that audit.
 
 ## 1. LabPlot
 

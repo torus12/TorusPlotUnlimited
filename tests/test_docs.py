@@ -13,7 +13,8 @@ DOCS = ROOT / "docs"
 
 REQUIRED_FILES = [
     "LICENSE", "README.md", "DECISIONS.md", "PROGRESS.md", "THIRD_PARTY_NOTICES.md", ".env.example",
-    "requirements.txt", "requirements-dev.txt", "run_torusplot.bat", "run_torusplot.sh", "cli.py",
+    "requirements.txt", "requirements-lock.txt", "requirements-ai.txt", "requirements-dev.txt",
+    "run_torusplot.bat", "run_torusplot.sh", "cli.py", "docs/COMMERCIAL_RELEASE_CHECKLIST.md",
     "docs/USER_GUIDE.md", "docs/STATS_METHODS.md", "docs/MCP.md", "docs/PROMPT_TEMPLATE_FOR_OUTSIDE_AI.md",
     "docs/REFERENCE_NOTES.md", "docs/MODEL_LICENSE_RESEARCH.md", "examples/README.md",
     "tests/fixtures/SOURCES.md", "torusplot/plot/fonts/README.md", ".github/workflows/ci.yml",
@@ -23,6 +24,7 @@ REQUIRED_FILES = [
 BANNED = re.compile(r"graph\s?pad|\bprism\b", re.IGNORECASE)
 #: Files that may name other products because they are provenance / policy records.
 ALLOWED_TO_NAME = {"docs/REFERENCE_NOTES.md", "DECISIONS.md", "FINAL_REPORT.md", "tests/test_docs.py",
+                   "tools/build_user_guide.py", "docs/COMMERCIAL_RELEASE_CHECKLIST.md",
                    "tests/stats/test_registry_integration.py", "tests/plot/test_styles_palettes.py"}
 TEXT_SUFFIXES = {".py", ".md", ".yaml", ".yml", ".toml", ".txt", ".bat", ".sh", ".svg", ".json", ".js", ".csv", ".cfg"}
 
@@ -116,6 +118,7 @@ def test_windows_launcher_is_safe_for_cmd():
     assert b"\r\n" in raw and b"\n" not in raw.replace(b"\r\n", b""), "batch file must use CRLF line endings"
     text = raw.decode("ascii")  # plain ASCII only: cmd.exe code pages vary
     assert "requirements.txt" in text and "streamlit run app\\streamlit_app.py" in text and "-m venv .venv" in text
+    assert "--require-hashes -r requirements-lock.txt" in text  # exact, hash-checked versions first
     depth = 0
     for line in text.splitlines():
         stripped = line.strip()
@@ -134,6 +137,39 @@ def test_third_party_notices_cover_all_requirements():
         name = re.split(r"[<>=!~\s#]", line.strip(), maxsplit=1)[0].lower()
         if name:
             assert f"| {name} |" in notices or f"| {name.replace('-', '_')} |" in notices, name
-    for bad in ("gpl", "agpl", "sspl", "busl", "non-commercial"):
-        table = "\n".join(line for line in notices.splitlines() if line.startswith("|"))
-        assert not re.search(rf"\|\s[^|]*\b{bad}\b", table), f"'{bad}' appears in the dependency table"
+    # the License column of the dependency table must contain no copyleft / non-commercial license
+    section = notices.split("## runtime dependencies", 1)[1].split("\n## ", 1)[0]
+    licenses = [line.split("|")[3].strip() for line in section.splitlines() if line.startswith("|") and line.count("|") >= 6][2:]
+    assert len(licenses) > 60
+    for text in licenses:
+        assert not re.search(r"\b(a|l)?gpl|sspl|busl|non-?commercial", text), text
+
+def test_release_package_contains_the_product_and_nothing_else(tmp_path):
+    """The customer deliverable is an explicit allowlist: no tests, fixtures, audits or dev notes."""
+    import importlib.util
+    import zipfile
+
+    spec = importlib.util.spec_from_file_location("build_release", ROOT / "tools" / "build_release.py")
+    build_release = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(build_release)
+    try:
+        files = build_release.release_files()
+    except (OSError, subprocess.CalledProcessError):
+        pytest.skip("not a git checkout")
+    if not files:
+        pytest.skip("not a git checkout")
+    joined = "\n".join(files)
+    for needed in ("LICENSE", "THIRD_PARTY_NOTICES.md", "run_torusplot.bat", "requirements-lock.txt", "app/streamlit_app.py",
+                   "torusplot/stats/registry.py", "torusplot/plot/fonts/Inter/OFL.txt", "torusplot/plot/fonts/Inter/Inter-Regular.ttf",
+                   "docs/USER_GUIDE.md", "examples/README.md"):
+        assert needed in files, needed
+    for forbidden in ("tests/", "tools/", "docs/dev/", "docs/audit/", "docs/REFERENCE_NOTES.md", "DECISIONS.md", "PROGRESS.md",
+                      "FINAL_REPORT.md", "requirements-dev.txt", ".github/", "_reference/"):
+        assert not re.search(rf"(^|\n){re.escape(forbidden)}", joined), forbidden
+    out = build_release.build(tmp_path / "release.zip")
+    with zipfile.ZipFile(out) as zf:
+        names = zf.namelist()
+        readme = zf.read(next(n for n in names if n.endswith("/README.md"))).decode("utf-8")
+    assert len(names) == len(files) and all(n.startswith("TorusPlot-") for n in names)
+    assert "dev-only" not in readme and "DECISIONS.md" not in readme and "tools/" not in readme
+    assert build_release.build(tmp_path / "again.zip").read_bytes() == out.read_bytes()  # deterministic

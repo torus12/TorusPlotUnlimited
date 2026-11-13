@@ -1,11 +1,9 @@
 # TorusPlot runtime dependencies. Every package here (and everything it pulls in)
 # must pass tools/check_licenses.py (permissive licenses only).
 numpy>=2.0,<3
-pandas>=2.2,<3
+pandas>=2.2,<3  # <3: the validation libraries in requirements-dev.txt (lifelines) need pandas 2
 scipy>=1.14,<2
 statsmodels>=0.14.4,<0.16
-scikit-posthocs>=0.11,<0.20
-lifelines>=0.30.3,<0.31
 matplotlib>=3.11,<3.12
 seaborn>=0.13.2,<0.14
 statannotations>=0.7.2,<0.8

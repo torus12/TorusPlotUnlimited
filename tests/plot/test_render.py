@@ -125,7 +125,7 @@ def test_bracket_selection_and_formats():
     assert len(no_ns) == 5
     comp = Comparison(id="x", group_a="a", group_b="b", p_value=0.03, p_adjusted=0.00004)
     assert comparison_label(comp, "stars") == "****"
-    assert comparison_label(comp, "stars", "apa") == "***"
+    assert comparison_label(comp, "stars", "three") == "***"
     assert comparison_label(comp, "p") == "P < 0.0001"
     assert comparison_label(Comparison(id="x", group_a="a", group_b="b", p_value=0.0312), "p") == "P = 0.0312"
     assert comparison_label(Comparison(id="x", group_a="a", group_b="b", p_value=0.0312), "p_short") == "0.0312"

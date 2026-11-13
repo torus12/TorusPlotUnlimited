@@ -89,7 +89,7 @@ Every decision made autonomously during the build is logged here:
   - Graphite is dual-licensed MIT OR Apache-2.0 (export target only, not a dependency).
   - `paper-plot-skills` has no license file -> ideas only.
 - **Alternatives:** none (policy is fixed by the brief).
-- **Reason:** Clean-room policy; see the notes file for per-repo details.
+- **Reason:** Ideas-only study policy; see the notes file for per-repo details.
 
 ## D-009 Default local (Ollama) model recommendations
 - **Decision:** Recommend `qwen2.5:7b` (text) and `granite3.2-vision` (vision) for the

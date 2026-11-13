@@ -50,12 +50,19 @@ if not exist ".venv\torusplot_installed.txt" (
     echo.
     echo  Installing required packages from PyPI. This happens once and takes a few minutes...
     ".venv\Scripts\python.exe" -m pip install --upgrade pip
-    ".venv\Scripts\python.exe" -m pip install -r requirements.txt
+    REM Exact, hash-checked versions (the tested and license-audited set):
+    ".venv\Scripts\python.exe" -m pip install --require-hashes -r requirements-lock.txt
     if errorlevel 1 (
         echo.
-        echo  Installation failed. Check your internet connection and run this file again.
-        pause
-        exit /b 1
+        echo  The pinned package set could not be installed on this Python version.
+        echo  Trying the compatible version ranges in requirements.txt instead...
+        ".venv\Scripts\python.exe" -m pip install -r requirements.txt
+        if errorlevel 1 (
+            echo.
+            echo  Installation failed. Check your internet connection and run this file again.
+            pause
+            exit /b 1
+        )
     )
     echo installed> ".venv\torusplot_installed.txt"
 )

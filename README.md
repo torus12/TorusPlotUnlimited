@@ -112,8 +112,8 @@ Pick the table type that matches your experiment; it decides which analyses and 
   values, effect size with 95% CI, sample sizes, and warnings.
 - The engine is validated against **NIST Statistical Reference Datasets**, published worked
   examples, and cross-checks between independent implementations. See
-  [docs/STATS_METHODS.md](docs/STATS_METHODS.md) for the method and primary reference behind
-  each test, and `tests/fixtures/SOURCES.md` for every validation source.
+  [docs/STATS_METHODS.md](docs/STATS_METHODS.md) for the method, the primary reference and the
+  validation behind each test.
 - Outliers are **flagged, never removed automatically**. Excluding a value takes an explicit
   confirmation and is written into the statistics report and methods paragraph.
 - Technical replicates are not treated as independent samples: use the *SuperPlot* workflow
@@ -159,14 +159,18 @@ python cli.py render --project my.tplot --formats svg pdf tiff
 python -m torusplot.mcp_server                          # MCP server for AI agents
 ```
 
-Developer checks:
+<!-- dev-only:start -->
+Developer checks (development repository only):
 
 ```bash
-pip install -r requirements.txt -r requirements-dev.txt
+pip install --require-hashes -r requirements-lock.txt
+pip install -r requirements-dev.txt
 python -m pytest                 # full test suite
 python -m ruff check .           # lint
 python tools/check_licenses.py   # every runtime dependency must be permissively licensed
+python tools/build_release.py    # build the clean customer ZIP (no tests, no dev notes)
 ```
+<!-- dev-only:end -->
 
 ---
 
@@ -175,11 +179,15 @@ python tools/check_licenses.py   # every runtime dependency must be permissively
 - **TorusPlot** itself is proprietary software owned by Torus Washington LLC ([LICENSE](LICENSE)).
 - It is built only on permissively licensed open-source packages (MIT, BSD, Apache-2.0, PSF,
   and similar). The full list with versions and licenses is in
-  [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), and an automated check
-  (`tools/check_licenses.py`) fails the build if a copyleft or unlicensed dependency appears.
+  [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The launcher installs exact,
+  hash-checked versions from `requirements-lock.txt`.
 - Bundled fonts (Inter, Source Sans 3, Liberation Sans) are under the SIL Open Font License;
   see [torusplot/plot/fonts/README.md](torusplot/plot/fonts/README.md).
 - Example datasets in `examples/` are synthetic.
 
-Project documents: [PROGRESS.md](PROGRESS.md) · [DECISIONS.md](DECISIONS.md) ·
-[FINAL_REPORT.md](FINAL_REPORT.md) · [docs/REFERENCE_NOTES.md](docs/REFERENCE_NOTES.md)
+<!-- dev-only:start -->
+Project documents (development repository): [FINAL_REPORT.md](FINAL_REPORT.md) ·
+[PROGRESS.md](PROGRESS.md) · [DECISIONS.md](DECISIONS.md) ·
+[docs/REFERENCE_NOTES.md](docs/REFERENCE_NOTES.md) ·
+[docs/COMMERCIAL_RELEASE_CHECKLIST.md](docs/COMMERCIAL_RELEASE_CHECKLIST.md)
+<!-- dev-only:end -->

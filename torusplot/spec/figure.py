@@ -290,7 +290,7 @@ class StatAnnotation(_Spec):
         description="stars: ns/*/**/***/****; p: 'P = 0.0123'; p_short: '0.012'; stars_p: both",
     )
     show_ns: bool = Field(default=True, description="Draw brackets for non-significant comparisons")
-    star_style: Literal["gp", "apa"] = Field(default="gp", description="gp: up to 4 stars; apa: up to 3")
+    star_style: Literal["four", "three"] = Field(default="four", description="four: ns, *, **, ***, **** (P < 0.0001); three: stops at *** (P < 0.001)")
     position: Literal["top left", "top right", "bottom left", "bottom right"] = Field(
         default="top left", description="Corner for summary_text"
     )

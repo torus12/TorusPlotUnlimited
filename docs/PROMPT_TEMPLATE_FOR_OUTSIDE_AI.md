@@ -45,7 +45,7 @@ To show a computed result, add for example `{"stat_result_id": "<the ID above>",
 
 `plot_type`: what it is. "Tables" lists the kinds of table it can be drawn from.
 
-- bar: Bar + individual points. Bars at the mean with error bars; every data point is always shown. Tables: column, grouped, multiple_variables. Default layers: mean_bar, sem_errorbar, data_points_jitter.
+- bar: Bar + individual points. Bars at the mean with error bars; every data point is shown by default. Tables: column, grouped, multiple_variables. Default layers: mean_bar, sem_errorbar, data_points_jitter.
 - scatter: Scatter dot plot (mean ± error). Every value as a dot with a line at the mean and an error bar. Tables: column, grouped, multiple_variables. Default layers: data_points_jitter, mean_dash, sd_errorbar.
 - box: Box plot + points. Median, quartiles and whiskers, with the raw points on top. Tables: column, grouped, multiple_variables. Default layers: boxplot, data_points_jitter.
 - violin: Violin plot + points. Smoothed distribution shape for each group with the raw points. Tables: column, grouped, multiple_variables. Default layers: violin, data_points_jitter, median_dash.
@@ -77,8 +77,8 @@ STYLE PRESETS (style.preset):
 
 PALETTES (style.palette; or give your own list of hex colours):
 - Okabe-Ito: #0072B2, #E69F00, #009E73, #CC79A7, #56B4E9, #D55E00, #F0E442, #000000
-- Torus: #27318B, #E4572E, #17A398, #F2A541, #7B4BB7, #4A4A4A, #8FB339, #C2185B
-- Torus Soft: #5B6BD6, #F28C6A, #4FC3B5, #F6C177, #A98BD9, #8C8C8C, #B5CF6B, #E07AA5
+- Torus: #27318B, #E4572E, #17A398, #F2A541, #7FC8F8, #7A1F2B, #A8E0C0, #16181D
+- Torus Soft: #5B6BD6, #F28C6A, #4FC3B5, #F6C177, #7A1F2B, #6A2C8F, #6B7A1E, #16181D
 - Classic Lab: #1A1A1A, #8C8C8C, #D0D0D0, #FFFFFF, #4D4D4D, #B3B3B3
 - Grayscale: #222222, #555555, #888888, #AAAAAA, #CCCCCC, #E5E5E5
 - Blue-Orange: #1F5FA8, #F28E2B, #7FB3E6, #FFBE7D, #0B3C6F, #B85C00
@@ -992,11 +992,11 @@ Fields that are not in this schema are ignored. Leave out everything you do not 
      "type": "boolean"
     },
     "star_style": {
-     "default": "gp",
-     "description": "gp: up to 4 stars; apa: up to 3",
+     "default": "four",
+     "description": "four: ns, *, **, ***, **** (P < 0.0001); three: stops at *** (P < 0.001)",
      "enum": [
-      "gp",
-      "apa"
+      "four",
+      "three"
      ],
      "title": "Star Style",
      "type": "string"
