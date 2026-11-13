@@ -12,6 +12,7 @@ from torusplot.plot import (
     available_families,
     get_preset,
     palette_names,
+    palette_report,
     preset_names,
     resolve_colors,
     simulate_image,
@@ -156,6 +157,20 @@ def render() -> None:
         st.markdown(f"**Live preview: {name}**")
         fig = preview_figure(new)
         if fig is not None:
+            groups_shown = _color_names(new, table)
+            if 2 <= len(groups_shown) <= 12 and new.plot_type != "heatmap":
+                try:
+                    used = list(resolve_colors(groups_shown, new.style.palette or preset["palette"], new.style.colors,
+                                               new.style.gradient).values())
+                    report = palette_report(used)
+                    bad = [CVD_LABELS[k].split(" (")[0] for k in ("deuteranopia", "protanopia", "tritanopia") if not report[k]["ok"]]
+                    if bad:
+                        st.warning("Colour check: some of these colours are hard to tell apart for readers with "
+                                   + ", ".join(bad).lower() + ". Try the Okabe-Ito palette or a gradient.")
+                    else:
+                        st.caption("Colour check: these colours stay distinguishable for the common forms of colour blindness.")
+                except PaletteError:
+                    pass
             with st.expander("Colour-blind preview"):
                 st.caption("How this figure looks to readers with the common forms of colour-vision deficiency, "
                            "and in grayscale print.")

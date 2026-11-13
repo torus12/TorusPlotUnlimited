@@ -110,7 +110,7 @@ def methods_paragraph(
     if include_software and results:
         sentences.append(
             f"Analyses and graphs were produced with TorusPlot {__version__} (Torus Washington LLC), "
-            "which computes statistics with SciPy, statsmodels, scikit-posthocs and lifelines."
+            "whose statistics engine is built on SciPy and statsmodels."
         )
     return " ".join(sentences)
 

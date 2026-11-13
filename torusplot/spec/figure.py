@@ -96,7 +96,7 @@ PLOT_TYPES: dict[str, dict[str, Any]] = {
     "bar": {
         "label": "Bar + individual points",
         "tables": ("column", "grouped", "multiple_variables"),
-        "description": "Bars at the mean with error bars; every data point is always shown.",
+        "description": "Bars at the mean with error bars; every data point is shown by default.",
     },
     "scatter": {
         "label": "Scatter dot plot (mean ± error)",
@@ -188,6 +188,9 @@ PLOT_TYPES: dict[str, dict[str, Any]] = {
 
 _ERROR_LAYERS = ("sem_errorbar", "sd_errorbar", "ci95_errorbar", "range_errorbar", "iqr_errorbar")
 _POINT_LAYERS = ("data_points", "data_points_jitter", "data_points_beeswarm")
+
+_TO_MEDIAN = {"mean_bar": "median_bar", "mean_dash": "median_dash"}
+_TO_MEAN = {v: k for k, v in _TO_MEDIAN.items()}
 
 _P_TEXT = re.compile(
     r"(\bp\s*(-?\s*value)?\s*[<=>≤≥]\s*0?\.\d)|(^\s*(\*{1,4}|n\.?s\.?)\s*$)|(\bp\s*adj)", re.IGNORECASE
@@ -486,6 +489,10 @@ class FigureSpec(_Spec):
         """Return a copy using ``sem`` / ``sd`` / ``ci95`` / ``range`` / ``iqr`` error bars (None removes them)."""
         layers = [lay for lay in self.effective_layers() if lay.type not in _ERROR_LAYERS]
         if kind:
+            # keep the centre consistent with the spread: IQR goes with the median, the others
+            # (SEM, SD, CI, range) with the mean, so the graph and the methods sentence agree
+            swap = _TO_MEDIAN if kind == "iqr" else _TO_MEAN
+            layers = [lay.model_copy(update={"type": swap[lay.type]}) if lay.type in swap else lay for lay in layers]
             new = Layer(type=f"{kind}_errorbar")  # type: ignore[arg-type]
             idx = next((i for i, lay in enumerate(layers) if lay.type in _POINT_LAYERS), len(layers))
             layers.insert(idx, new)
@@ -547,7 +554,11 @@ class CompositionSpec(_Spec):
 
 
 def default_layers(plot_type: str) -> list[Layer]:
-    """Default layer stack for each plot type. Raw data points are always included."""
+    """Default layer stack for each plot type.
+
+    Group-comparison plots (bar, scatter, box, violin, beeswarm, SuperPlot, estimation, paired)
+    include the raw data points by default; the user can hide them explicitly.
+    """
 
     def L(*names: str) -> list[Layer]:
         return [Layer(type=n) for n in names]  # type: ignore[arg-type]

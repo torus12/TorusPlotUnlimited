@@ -14,7 +14,7 @@ from ..spec.figure import FigureSpec
 from ..stats.result import StatResult, format_p, p_to_stars
 from .methods import methods_paragraph, significance_legend
 
-_BADGE = {"pass": "PASS", "warn": "WARN", "fail": "FAIL", "info": "INFO"}
+_BADGE = {"pass": "PASS", "warn": "CHECK", "fail": "FAIL", "info": "INFO"}  # same words as the app's badges
 
 
 def _g(value: Any, digits: int = 4) -> str:
@@ -177,8 +177,13 @@ def stats_report_rows(results: Iterable[StatResult]) -> list[dict[str, Any]]:
             add(res, "parameter", name=p.name, value=p.value, se=p.se, ci_low=p.ci_low, ci_high=p.ci_high,
                 statistic=p.statistic, p_value=p.p_value)
         for row in res.anova_table:
+            # repeated-measures rows carry the sphericity-corrected P that the result reports
+            reported = row.get("p_reported", row.get("p"))
+            detail = f"MS={_g(row.get('ms'))}"
+            if row.get("p_reported") is not None and row.get("p") is not None and row.get("p_reported") != row.get("p"):
+                detail += f"; uncorrected P={_g(row.get('p'))}"
             add(res, "anova", name=row.get("source", ""), value=row.get("ss"), statistic_name="F", statistic=row.get("f"),
-                df=row.get("df"), p_value=row.get("p"), detail=f"MS={_g(row.get('ms'))}")
+                df=row.get("df"), p_value=reported, detail=detail)
         for c in res.comparisons:
             add(res, "comparison", name=c.id, group_a=c.group_a, group_b=c.group_b, label=c.label, value=c.estimate,
                 se=c.se, ci_low=c.ci_low, ci_high=c.ci_high, statistic_name=c.statistic_name, statistic=c.statistic,

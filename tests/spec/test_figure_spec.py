@@ -136,3 +136,15 @@ def test_json_schema_export():
     assert json.loads(text) == schema
     guide = plot_type_guide()
     assert all(key in guide for key in PLOT_TYPES)
+
+
+def test_iqr_error_bars_switch_the_centre_to_the_median_and_back():
+    spec = FigureSpec(plot_type="bar", data={"table": "t"})
+    iqr = spec.with_error_bars("iqr")
+    assert [lay.type for lay in iqr.layers] == ["median_bar", "iqr_errorbar", "data_points_jitter"]
+    back = iqr.with_error_bars("sem")
+    assert [lay.type for lay in back.layers] == ["mean_bar", "sem_errorbar", "data_points_jitter"]
+    from torusplot.export import data_presentation_sentence
+
+    assert "median with interquartile range" in data_presentation_sentence(iqr)
+    assert "mean ± SEM" in data_presentation_sentence(back)

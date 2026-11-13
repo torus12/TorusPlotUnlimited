@@ -24,12 +24,17 @@ OKABE_ITO = ["#0072B2", "#E69F00", "#009E73", "#CC79A7", "#56B4E9", "#D55E00", "
 
 PALETTES: dict[str, list[str]] = {
     "Okabe-Ito": OKABE_ITO,
-    "Torus": ["#27318B", "#E4572E", "#17A398", "#F2A541", "#7B4BB7", "#4A4A4A", "#8FB339", "#C2185B"],
-    "Torus Soft": ["#5B6BD6", "#F28C6A", "#4FC3B5", "#F6C177", "#A98BD9", "#8C8C8C", "#B5CF6B", "#E07AA5"],
+    "Torus": ["#27318B", "#E4572E", "#17A398", "#F2A541", "#7FC8F8", "#7A1F2B", "#A8E0C0", "#16181D"],
+    "Torus Soft": ["#5B6BD6", "#F28C6A", "#4FC3B5", "#F6C177", "#7A1F2B", "#6A2C8F", "#6B7A1E", "#16181D"],
     "Classic Lab": ["#1A1A1A", "#8C8C8C", "#D0D0D0", "#FFFFFF", "#4D4D4D", "#B3B3B3"],
     "Grayscale": ["#222222", "#555555", "#888888", "#AAAAAA", "#CCCCCC", "#E5E5E5"],
     "Blue-Orange": ["#1F5FA8", "#F28E2B", "#7FB3E6", "#FFBE7D", "#0B3C6F", "#B85C00"],
 }
+
+#: Palettes whose colours all stay distinguishable (CIE76 Delta-E >= 10 between every pair) for
+#: normal vision and simulated deuteranopia, protanopia and tritanopia, at any number of groups
+#: up to the palette length. Verified by tests/plot/test_styles_palettes.py.
+CVD_SAFE_PALETTES = ("Okabe-Ito", "Torus", "Torus Soft")
 
 #: Sequential colormaps that can be sampled into discrete palettes or used for heat maps.
 SEQUENTIAL = ("viridis", "magma", "plasma", "inferno", "cividis")

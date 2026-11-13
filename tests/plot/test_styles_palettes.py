@@ -146,3 +146,15 @@ def test_bundled_fonts_are_ofl_and_registered():
     assert resolve_family(None)[0] == "Inter"
     family, warning = resolve_family("Definitely Missing Font")
     assert family == "Inter" and "not installed" in warning
+
+
+def test_palettes_declared_colourblind_safe_pass_at_every_size():
+    from torusplot.plot.palettes import CVD_SAFE_PALETTES
+
+    for name in CVD_SAFE_PALETTES:
+        colors = PALETTES[name]
+        assert len(colors) == 8
+        for n in range(2, len(colors) + 1):
+            report = palette_report(colors[:n])
+            for kind in ("normal", "deuteranopia", "protanopia", "tritanopia"):
+                assert report[kind]["ok"], (name, n, kind, report[kind])
