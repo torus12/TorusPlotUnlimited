@@ -163,3 +163,64 @@ def test_power_calculator_solves_for_sample_size():
     at.text_input(key="pw_es").set_value("0.5").run()
     click(at, "pw_go")
     assert any("64" in s.value for s in at.success), [s.value for s in at.success]
+
+
+def test_ai_is_off_by_default_and_describe_is_disabled():
+    at = load_sample(fresh(), "nanoparticle_size")
+    goto(at, "AI Assistant")
+    assert at.session_state["ai_settings"].enabled is False
+    assert at.button(key="describe_go").disabled
+    goto(at, "Settings")
+    assert at.toggle(key="ai_enabled").value is False
+
+
+def enable_mock_ai(at: AppTest) -> AppTest:
+    goto(at, "Settings")
+    at.toggle(key="ai_enabled").set_value(True).run()
+    at.selectbox(key="ai_provider").set_value("mock").run()
+    assert not at.exception, [e.value for e in at.exception]
+    assert at.session_state["ai_settings"].enabled and at.session_state["ai_settings"].provider == "mock"
+    return at
+
+
+def test_settings_provider_test_button():
+    at = enable_mock_ai(fresh())
+    click(at, "ai_test")
+    assert at.success or at.warning
+
+
+def test_describe_it_with_mock_provider_creates_a_valid_figure():
+    at = load_sample(fresh(), "nanoparticle_size")
+    enable_mock_ai(at)
+    goto(at, "AI Assistant")
+    at.text_area(key="describe_text").set_value("bar chart with SD error bars and individual points").run()
+    click(at, "describe_go")
+    outcome = at.session_state["describe_outcome"]
+    assert outcome.spec is not None, outcome.errors
+    assert outcome.spec.data.table == "Nanoparticle diameter (nm)"
+    click(at, "describe_save")
+    assert any(name.startswith("Described figure") for name in at.session_state["project"].figures)
+
+
+def test_outside_json_import_works_offline_and_drops_typed_statistics():
+    import json
+
+    at = load_sample(fresh(), "nanoparticle_size")
+    goto(at, "AI Assistant")
+    pasted = "Here is your figure:\n```json\n" + json.dumps({
+        "plot_type": "box",
+        "data": {"table": "Nanoparticle diameter (nm)"},
+        "title": "Size by method",
+        "annotations": [{"text": "***", "p_value": 0.001, "groups": ["Bulk mixing", "Microfluidic"]}],
+        "style": {"preset": "Minimal", "palette": "Okabe-Ito"},
+    }) + "\n```"
+    at.text_area(key="outside_text").set_value(pasted).run()
+    click(at, "outside_go")
+    outcome = at.session_state["outside_outcome"]
+    assert outcome.spec is not None, outcome.errors
+    assert outcome.spec.plot_type == "box" and outcome.spec.style.preset == "Minimal"
+    assert outcome.spec.annotations == []  # the invented significance was dropped
+    assert any("TorusPlot" in w for w in outcome.warnings)
+    assert outcome.attempts == 0  # no AI provider was needed
+    click(at, "outside_save")
+    assert any(name.startswith("Imported figure") for name in at.session_state["project"].figures)

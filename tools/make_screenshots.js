@@ -59,8 +59,15 @@ async function nav(page, label, marker) {
   await page.waitForTimeout(2500);
   await page.screenshot({ path: `${out}/app_export.png` });
 
-  await nav(page, 'AI Assistant', 'AI Assistant');
+  await nav(page, 'AI Assistant', 'Describe it');
+  await page.getByRole('tab', { name: 'Match this figure' }).click();
+  await page.waitForTimeout(800);
+  // style source: one of TorusPlot's own gallery images (classic black/grey look)
+  await page.locator('input[type="file"]').nth(0).setInputFiles(`${out}/plot_violin.png`);
   await page.waitForTimeout(1500);
+  await page.getByRole('button', { name: 'Match this figure' }).click();
+  await page.waitForSelector('text=Colours measured from the reference', { timeout: 90000 });
+  await page.waitForTimeout(2000);
   await page.screenshot({ path: `${out}/app_assistant.png` });
 
   await browser.close();
