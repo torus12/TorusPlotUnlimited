@@ -1,0 +1,25 @@
+# study-only reference clones: never commit, package, or import
+_reference/
+# secrets
+.env
+# python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+coverage.xml
+htmlcov/
+# app/runtime output
+output/
+*.tplot.tmp
+.streamlit/secrets.toml
+tests/golden/_failed/
+.DS_Store
+Thumbs.db

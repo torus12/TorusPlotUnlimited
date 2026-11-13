@@ -1,0 +1,9 @@
+Copyright (c) 2026 Torus Washington LLC. All rights reserved.
+
+TorusPlot is proprietary software. No part of this software may be copied,
+modified, distributed, sublicensed, or sold without the prior written
+permission of Torus Washington LLC.
+
+Third-party open-source components used by TorusPlot are listed, with their
+own licenses, in THIRD_PARTY_NOTICES.md. Bundled fonts are listed, with their
+licenses, in torusplot/plot/fonts/README.md.

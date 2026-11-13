@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.11", "3.12"]
+    env:
+      MPLBACKEND: Agg
+      PYTHONUTF8: "1"
+      TORUSPLOT_AI_PROVIDER: mock
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+      - name: Install dependencies (PyPI only)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r requirements-dev.txt
+      - name: Lint (ruff)
+        run: python -m ruff check .
+      - name: License check (permissive runtime dependencies only)
+        run: python tools/check_licenses.py
+      - name: Tests
+        run: python -m pytest --cov=torusplot --cov-report=term
+      - name: Upload failed golden-image diffs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: golden-diffs-${{ matrix.os }}-${{ matrix.python }}
+          path: tests/golden/_failed/
+          if-no-files-found: ignore

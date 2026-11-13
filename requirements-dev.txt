@@ -1,0 +1,6 @@
+# Developer-only tools (not shipped, not imported by the app).
+pytest>=8
+pytest-cov>=5
+ruff>=0.8
+pip-licenses>=5
+hypothesis>=6.100

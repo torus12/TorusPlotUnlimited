@@ -1,0 +1,56 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "torusplot"
+version = "0.1.0"
+description = "TorusPlot: local, AI-native scientific graphing and statistics."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [{ name = "Torus Washington LLC" }]
+dynamic = ["dependencies"]
+
+[project.scripts]
+torusplot = "torusplot.cli:main"
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }
+
+[tool.setuptools.packages.find]
+include = ["torusplot*", "app*"]
+exclude = ["_reference*", "tests*"]
+
+[tool.setuptools.package-data]
+torusplot = ["plot/styles/*.yaml", "plot/fonts/**/*", "assets/*", "ai/recorded/*.json"]
+app = ["assets/*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = ["_reference", ".venv", "build", "dist"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["E501", "B008", "B905"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011", "E741"]
+"torusplot/stats/*" = ["E741"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q -p no:cacheprovider"
+filterwarnings = [
+    "ignore::DeprecationWarning:pyparsing.*",
+    "ignore::DeprecationWarning:dateutil.*",
+]
+markers = [
+    "golden: golden-image comparison tests",
+    "slow: slower end-to-end tests",
+]
+
+[tool.coverage.run]
+source = ["torusplot"]
+omit = ["torusplot/ai/providers/gemini.py", "torusplot/ai/providers/anthropic.py", "torusplot/ai/providers/openai.py"]

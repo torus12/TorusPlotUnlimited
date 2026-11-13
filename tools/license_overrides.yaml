@@ -1,0 +1,36 @@
+# Manually verified licenses for packages whose metadata the automatic check cannot
+# accept as-is. An override only applies while `license_reported` still equals what the
+# installed package reports, so any future license change fails the check again.
+#
+# Every entry needs: license_reported, verified_license (must itself be on the
+# allowlist), source_url (where a human read the license), verified_on, reason.
+packages:
+  numpy:
+    license_reported: "BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0"
+    verified_license: "BSD-3-Clause"
+    source_url: "https://github.com/numpy/numpy/blob/main/LICENSE.txt"
+    verified_on: "2026-11-13"
+    reason: >
+      NumPy itself is BSD-3-Clause. The extra identifiers in its SPDX expression (0BSD,
+      MIT, Zlib, CC0-1.0) cover small vendored components and are all permissive,
+      attribution-style or public-domain-style licenses with no copyleft or
+      field-of-use restriction. 0BSD and Zlib are not named in the project allowlist, so
+      they are accepted here by explicit, recorded review rather than silently.
+  cffi:
+    license_reported: "MIT-0"
+    verified_license: "MIT"
+    source_url: "https://github.com/python-cffi/cffi/blob/main/LICENSE"
+    verified_on: "2026-11-13"
+    reason: >
+      MIT-0 ("MIT No Attribution") is the MIT license with the attribution requirement
+      removed, i.e. strictly more permissive than MIT. Transitive dependency
+      (mcp -> pyjwt[crypto] -> cryptography -> cffi).
+  pillow:
+    license_reported: "MIT-CMU"
+    verified_license: "HPND"
+    source_url: "https://github.com/python-pillow/Pillow/blob/main/LICENSE"
+    verified_on: "2026-11-13"
+    reason: >
+      Pillow's license text is the historical PIL permission notice. SPDX now labels it
+      MIT-CMU; older Pillow releases labelled the same text HPND. It is a permissive
+      license (use, copy, modify, distribute for any purpose with the notice retained).
