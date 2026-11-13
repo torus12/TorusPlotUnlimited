@@ -278,3 +278,35 @@ Every decision made autonomously during the build is logged here:
 - **Alternatives:** always recommend Welch-type tests without pre-tests.
 - **Reason:** Matches what journals and reviewers expect while being honest about the limits
   of pre-testing with small n.
+
+## D-027 AI layer design (how each feature stays inside the hard rule)
+- **Decision:**
+  - *Prompts* give a model only table/column/group names, counts, and for statistics only
+    result IDs, test names and comparison group names/IDs. No data values and no P values are
+    sent (tested by planting distinctive P values and asserting they never reach a prompt).
+  - *Outputs* are parsed as JSON, validated with `FigureSpec.model_validate`, then sanitised:
+    unknown result IDs / tables / groups are removed with warnings. Validation errors are fed
+    back to the model, at most 3 retries (4 calls).
+  - *Match this figure* measures colours and proportions deterministically with Pillow
+    (k-means palette) and cross-checks any colours a vision model reports against them. The
+    feedback loop is capped at 3 rounds, scores renders with SSIM, and applies only
+    whitelisted style/layout patches (never `data`, `annotations`, `title`, layer types).
+  - *Digitize* is fully deterministic (no model), outputs an XY table flagged
+    `approximate=True` and named "... (APPROXIMATE)"; the statistics registry refuses such
+    tables unless `allow_approximate=True` is passed explicitly.
+  - *Outside AI instructions* import JSON offline with lenient clean-up; objects that try to
+    carry P values or stars are dropped with a warning.
+- **Alternatives:** trusting model output; letting the model see results to "choose wisely".
+- **Reason:** the model can pick *which* computed comparisons to show (by ID or "significant")
+  without ever seeing or producing a number.
+- **Not exercised:** no real provider (Ollama, Gemini, OpenAI, Anthropic) could be called from
+  the sandbox; providers are tested against fakes that assert the request shape.
+
+## D-028 MCP server design
+- **Decision:** All logic lives in a plain `TorusSession` class (no MCP import); `server.py`
+  registers its methods with the SDK's `MCPServer` (mcp 2.x; `FastMCP` was renamed). 15 tools:
+  the 8 required ones plus list/save/load/schema helpers and `get_result`. Exports are confined
+  to an output directory (path traversal rejected). Tool errors are user-facing messages.
+- **Alternatives:** tools written directly against the SDK (harder to unit-test).
+- **Reason:** testable without a running server; protocol tested in-memory and over stdio.
+- **Not exercised:** not run against a real Claude Desktop / Claude Code client from the sandbox.
